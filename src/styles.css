@@ -148,6 +148,9 @@ table.grid td.val.t { color: var(--true); font-weight: 700; } table.grid td.val.
 .branch { display: flex; flex-direction: column; position: relative; }
 .branch .lane { display: flex; align-items: flex-start; position: relative; padding-top: 0; min-height: 52px; }
 .branch .lane + .lane { margin-top: 6px; }
+/* A shorter parallel path stretches its last wire to the right-hand bar, so every path stays connected. */
+.branch .lane > .series { flex: 1 1 auto; }
+.branch .lane > .series > .wire:last-child { flex: 1 1 auto; }
 .branch .lane::before, .branch .lane::after { content: ""; flex: none; }
 .lbar { position: absolute; top: 0; bottom: 0; width: 0; border-left: 2px solid #222; pointer-events: none; }
 .lbar.l { left: 0; } .lbar.r { right: 0; }

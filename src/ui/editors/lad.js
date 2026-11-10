@@ -135,10 +135,10 @@ export function mountLadder(host, tab) {
       state.selection = { block: blockId, network: Math.max(0, s.network - 1) }
     })
   }
-  function insertNetwork(after = true) {
+  function insertNetwork(after = true, atEnd = false) {
     edit((p) => {
       const blk = p.blocks.find((x) => x.id === blockId)
-      const i = sel()?.network ?? blk.networks.length - 1
+      const i = atEnd ? blk.networks.length - 1 : sel()?.network ?? blk.networks.length - 1
       blk.networks.splice(after ? i + 1 : i, 0, newNetwork('LAD'))
       state.selection = { block: blockId, network: after ? i + 1 : i }
     })
@@ -149,6 +149,13 @@ export function mountLadder(host, tab) {
     edit((p) => {
       const blk = p.blocks.find((x) => x.id === blockId), i = sel()?.network ?? blk.networks.length - 1
       const n = clone(state.clipboard.data); n.id = uid('n')
+      // Like TIA, a pasted timer/counter/edge gets its own instance instead of sharing the original's.
+      const used = new Set(); (function walk(l) { l.forEach((e) => { if (e.inst) used.add(e.inst); e.branches?.forEach(walk) }) })(blk.networks.flatMap((x) => x.elements ?? []))
+      ;(function renew(l) { l.forEach((e) => {
+        if (e.k === 'box' && e.inst) { let k = 1; while (used.has(`${e.fb}_${k}`)) k++; e.inst = `${e.fb}_${k}`; used.add(e.inst) }
+        else if ((e.k === 'P' || e.k === 'N') && e.inst) e.inst = `${e.k}_${uid('').slice(-4)}`
+        e.branches?.forEach(renew)
+      }) })(n.elements ?? [])
       blk.networks.splice(i + 1, 0, n)
       state.selection = { block: blockId, network: i + 1 }
     })
@@ -400,7 +407,7 @@ export function mountLadder(host, tab) {
     root.replaceChildren()
     refs.nets.clear()
     b.networks.forEach((n, i) => root.append(network(n, i)))
-    root.append(h('button', { type: 'button', class: 'add-network', onClick: () => insertNetwork(true) }, '+ Add network / rung'), h('div', { class: 'insert-hint' }, 'Select a wire (+) to insert before, between or after instructions. Start branch: Shift+F8. Add its instructions, select the return wire, then close: Shift+F9. Add a rung: Ctrl+R.'))
+    root.append(h('button', { type: 'button', class: 'add-network', onClick: () => insertNetwork(true, true) }, '+ Add network / rung'), h('div', { class: 'insert-hint' }, 'Select a wire (+) to insert before, between or after instructions. Start branch: Shift+F8. Add its instructions, select the return wire, then close: Shift+F9. Add a rung: Ctrl+R.'))
     root.style.zoom = zoom
     body.scrollTop = scroll
     applySelection()
