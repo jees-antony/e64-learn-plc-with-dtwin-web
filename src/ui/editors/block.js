@@ -1,6 +1,6 @@
 // Block editor: header, interface table and the language editor (LAD / FBD / SCL).
 import { h } from '../dom.js'
-import { blockById } from '../store.js'
+import { blockById, on } from '../store.js'
 import { mountFbd } from './fbd.js'
 import { mountLadder } from './lad.js'
 import { mountScl } from './scl.js'
@@ -14,5 +14,6 @@ export function mountBlock(host, tab) {
   const content = h('div', { style: { flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' } })
   host.append(head, iface.el, content)
   const inner = b.lang === 'LAD' ? mountLadder(content, tab) : b.lang === 'FBD' ? mountFbd(content, tab) : mountScl(content, tab)
-  return { dispose() { inner.dispose?.() }, focus() { inner.focus?.() } }
+  const off = on('project', ({ reason } = {}) => iface.refresh(reason))
+  return { dispose() { off(); iface.dispose(); inner.dispose?.() }, focus() { inner.focus?.() } }
 }

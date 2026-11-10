@@ -37,7 +37,7 @@ const MENUS = [
   ['Project', ['example', 'import', 'export', '-', 'save']],
   ['Edit', ['undo', 'redo', '-', 'cut', 'copy', 'paste', 'delete', '-', 'rename']],
   ['View', ['toggleLeft', 'toggleRight', 'toggleBottom', '-', 'help']],
-  ['Insert', ['insertNetwork', '-', 'insNO', 'insNC', 'insCoil', 'insSet', 'insReset', 'insBranch', 'insBox', 'insCmp']],
+  ['Insert', ['insertNetwork', '-', 'insNO', 'insNC', 'insCoil', 'insSet', 'insReset', 'insBranch', 'closeBranch', 'insBox', 'insCmp']],
   ['Online', ['goOnline', 'goOffline', '-', 'download', 'simulate', '-', 'run', 'stop', '-', 'monitor']],
   ['Tools', ['compile']],
   ['Help', ['help']],
@@ -66,7 +66,7 @@ function toolbar() {
       btn('compile', 'compile', 'Compile', 'compile'), btn('download', 'download', 'Download'), h('div', { class: 'sep' }),
       btn('goOnline', 'online', 'Go online'), btn('goOffline', 'offline', 'Go offline'), btn('run', 'run', 'Start CPU', 'run'), btn('stop', 'stop', 'Stop CPU', 'halt'),
       h('button', { class: `tb${state.monitor === false ? '' : ' on'}`, title: 'Monitoring on / off (Ctrl+Shift+M)', onClick: () => commands.get('monitor').run() }, icon(ICON.eye), 'Monitor'), h('div', { class: 'sep' }),
-      btn('insertNetwork', 'net', ''), btn('insNO', 'no', ''), btn('insNC', 'nc', ''), btn('insCoil', 'coil', ''), btn('insBranch', 'branch', ''), btn('insCmp', 'cmp', ''), h('div', { class: 'sep' }), btn('help', 'help', ''))
+      btn('insertNetwork', 'net', ''), btn('insNO', 'no', ''), btn('insNC', 'nc', ''), btn('insCoil', 'coil', ''), btn('insBranch', 'branch', ''), btn('closeBranch', 'branch', 'Close branch'), btn('insCmp', 'cmp', ''), h('div', { class: 'sep' }), btn('help', 'help', ''))
     const set = (id, dis) => { const b = el.querySelector(`[data-cmd="${id}"]`); if (b) b.disabled = dis }
     set('goOnline', !o.machine || o.mode !== 'offline'); set('goOffline', o.mode === 'offline'); set('run', !o.machine || o.mode !== 'stop'); set('stop', o.mode !== 'run')
   }

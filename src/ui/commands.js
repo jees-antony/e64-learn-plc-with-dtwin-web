@@ -62,6 +62,7 @@ def('insBox', 'Empty box (choose instruction)', 'Shift+F5', 'tia', () => E()?.in
 def('insReset', 'Reset output coil', 'Shift+F6', 'app', () => E()?.insert?.('reset'))
 def('insCoil', 'Output coil', 'Shift+F7', 'tia', () => E()?.insert?.('coil'))
 def('insBranch', 'Open branch', 'Shift+F8', 'tia', () => E()?.insert?.('branch'))
+def('closeBranch', 'Close branch', 'Shift+F9', 'tia', () => E()?.insert?.('closeBranch'))
 def('insCmp', 'Comparison', 'Shift+F10', 'app', () => E()?.insert?.('cmp'))
 
 /* navigation / view */

@@ -4,10 +4,11 @@
 import { COMPARE, DEFAULT_PIN, FB } from '../../core/catalog.js'
 import { newNetwork, uid } from '../../core/model.js'
 import { contextMenu, h, svg } from '../dom.js'
-import { editor } from '../commands.js'
+import { editor, toast } from '../commands.js'
 import { isOnline, readOperand } from '../online.js'
 import { PALETTE } from '../palette.js'
-import { blockById, edit, emit, on, select, state } from '../store.js'
+import { seriesAt, insertAtGap, startBranch, closeBranch, addParallelPath, removeBranch, openBranches, validateLadderNetwork } from '../../core/ladder-edit.js'
+import { blockById, edit, on, select, state } from '../store.js'
 
 const key = (p) => p.join('.')
 const clone = (x) => JSON.parse(JSON.stringify(x))
@@ -18,16 +19,6 @@ export function resolve(net, path) {
   for (let k = 0; k < pairs; k += 2) list = list[path[k]].branches[path[k + 1]]
   return n % 2 ? { list, index: path[n - 1] } : { list, index: list.length - 1 }
 }
-/** All element paths of a network in reading order (left to right, lanes top to bottom). */
-function flatten(list, base = [], out = []) {
-  list.forEach((e, i) => {
-    const p = [...base, i]
-    if (e.k === 'branch') e.branches.forEach((lane, li) => flatten(lane, [...p, li], out))
-    else out.push(p)
-  })
-  return out
-}
-
 export function mountLadder(host, tab) {
   const blockId = tab.id
   const block = () => blockById(blockId)
@@ -43,13 +34,26 @@ export function mountLadder(host, tab) {
   const tagOptions = () => [...state.project.tags.map((t) => t.name), ...Object.values(block().interface).flat().map((v) => v.name)]
 
   /* ------------------------------------------------------------- editing -- */
+  function gapOf(net, s, after = true) {
+    if (s?.gap) return clone(s.gap)
+    if (s?.branch) return { path: s.branch.slice(0, -1), index: s.branch.at(-1) + (after ? 1 : 0) }
+    if (s?.path?.length) {
+      if (s.path.length % 2) return { path: s.path.slice(0, -1), index: s.path.at(-1) + (after ? 1 : 0) }
+      return { path: [...s.path], index: seriesAt(net, s.path).length }
+    }
+    return { path: [], index: net.elements.length }
+  }
+  function containingBranch(s) {
+    if (s?.branch) return s.branch
+    const path = s?.gap?.path ?? s?.path ?? []
+    return path.length >= 2 ? path.slice(0, path.length % 2 ? -2 : -1) : null
+  }
   const nameFor = (fb) => { const used = new Set(); (block().networks ?? []).forEach((n) => (function walk(l) { l.forEach((e) => { if (e.inst) used.add(e.inst); e.branches?.forEach(walk) }) })(n.elements)); let i = 1; while (used.has(`${fb}_${i}`)) i++; return `${fb}_${i}` }
   function make(kind) {
     if (kind === 'NO' || kind === 'NC') return { k: kind, tag: '' }
     if (kind === 'P' || kind === 'N') return { k: kind, tag: '', inst: `${kind}_${uid('').slice(-4)}` }
     if (kind === 'cmp') return { k: 'cmp', op: '==', a: '', b: '' }
     if (kind === 'move') return { k: 'move', src: '', dest: '' }
-    if (kind === 'branch') return { k: 'branch', branches: [[], []] }
     if (kind.startsWith('box:')) { const fb = kind.slice(4); return { k: 'box', fb, inst: nameFor(fb), args: {} } }
     return null
   }
@@ -57,6 +61,26 @@ export function mountLadder(host, tab) {
   function insert(kind, at) {
     const b = block(); if (!b) return
     if (kind === 'box?') { chooseBox(); return }
+    // Validate a detached edit first. A failed close must not alter history or the program.
+    if (['branch', 'closeBranch', 'addPath', 'removeBranch'].includes(kind)) {
+      const s = at ?? sel(), ni = Math.min(s?.network ?? b.networks.length - 1, b.networks.length - 1)
+      const net = clone(b.networks[ni])
+      if (!net) return
+      try {
+        let gap
+        if (kind === 'branch') gap = startBranch(net, gapOf(net, s, false), !!s?.path?.length && s.path.length % 2 === 1)
+        else if (kind === 'closeBranch') gap = closeBranch(net, s ? gapOf(net, s) : null)
+        else {
+          const path = containingBranch(s)
+          if (!path) throw new Error('Select a branch or an instruction inside it first.')
+          if (kind === 'addPath') gap = addParallelPath(net, path)
+          else { removeBranch(net, path); gap = { path: path.slice(0, -1), index: path.at(-1) } }
+        }
+        edit(p => { p.blocks.find(x => x.id === blockId).networks[ni] = net; state.selection = { block: blockId, network: ni, gap } })
+        if (kind === 'branch') toast('Branch started. Add the lower-path instructions, then select a return wire and choose Close branch.')
+      } catch (error) { toast(error.message) }
+      return
+    }
     edit((p) => {
       const blk = p.blocks.find((x) => x.id === blockId)
       let s = at ?? sel()
@@ -71,22 +95,10 @@ export function mountLadder(host, tab) {
         state.selection = { block: blockId, network: ni, coil: at2 }
         return
       }
-      if (kind === 'branch') {
-        if (s?.path?.length && s.path.length % 2) {
-          const { list, index } = resolve(net, s.path)
-          list[index] = { k: 'branch', branches: [[list[index]], []] }
-          state.selection = { block: blockId, network: ni, path: [...s.path.slice(0, -1), index, 1] }
-        } else { net.elements.push({ k: 'branch', branches: [[], []] }); state.selection = { block: blockId, network: ni, path: [net.elements.length - 1, 0] } }
-        return
-      }
       const el = make(kind); if (!el) return
-      let list, index
-      if (s?.path?.length) ({ list, index } = resolve(net, s.path)); else { list = net.elements; index = list.length - 1 }
-      const pos = s?.path?.length && s.path.length % 2 === 0 ? list.length : index + 1
-      list.splice(pos, 0, el)
-      const base = s?.path?.length ? (s.path.length % 2 ? s.path.slice(0, -1) : [...s.path]) : []
+      const path = insertAtGap(net, gapOf(net, s), el)
       pendingEdit = true
-      state.selection = { block: blockId, network: ni, path: [...base, pos] }
+      state.selection = { block: blockId, network: ni, path }
     })
   }
   function chooseBox() {
@@ -102,6 +114,8 @@ export function mountLadder(host, tab) {
   }
   function remove() {
     const s = sel(); if (!s) return
+    if (s.gap) { toast('A wire is selected. Select the instruction or rung you want to delete.'); return }
+    if (s.branch) { insert('removeBranch'); return }
     edit((p) => {
       const blk = p.blocks.find((x) => x.id === blockId), net = blk.networks[s.network]
       if (s.coil !== undefined) { net.coils.splice(s.coil, 1); state.selection = { block: blockId, network: s.network }; return }
@@ -143,8 +157,10 @@ export function mountLadder(host, tab) {
     const b = block(), s = sel(); if (!s) { if (b.networks.length) setSel({ network: 0 }); return }
     const nets = b.networks
     if (dir === 'up' || dir === 'down') { const n = s.network + (dir === 'down' ? 1 : -1); if (n >= 0 && n < nets.length) setSel({ network: n }); return }
-    const net = nets[s.network], flat = flatten(net.elements).map((p) => ({ path: p })).concat(net.coils.map((_, i) => ({ coil: i })))
-    const cur = flat.findIndex((f) => (s.coil !== undefined ? f.coil === s.coil : s.path && f.path && key(f.path) === key(s.path)))
+    const net = nets[s.network], flat = []
+    const positions = (list, base) => { flat.push({ gap: { path: base, index: 0 } }); list.forEach((e, i) => { if (e.k === 'branch') e.branches.forEach((lane, li) => positions(lane, [...base, i, li])); else flat.push({ path: [...base, i] }); flat.push({ gap: { path: base, index: i + 1 } }) }) }
+    positions(net.elements, []); flat.push(...net.coils.map((_, i) => ({ coil: i })))
+    const cur = flat.findIndex(f => s.gap ? JSON.stringify(f.gap) === JSON.stringify(s.gap) : s.coil !== undefined ? f.coil === s.coil : s.path && f.path && key(f.path) === key(s.path))
     const next = flat[cur < 0 ? 0 : Math.max(0, Math.min(flat.length - 1, cur + (dir === 'right' ? 1 : -1)))]
     if (next) setSel({ network: s.network, ...next })
   }
@@ -174,6 +190,7 @@ export function mountLadder(host, tab) {
   }, `op:${blockId}`)
   function edit0() {
     const s = sel(); if (!s) return
+    if (s.gap || s.branch) { const el = body.querySelector('.wire-slot.sel,.branch.sel'); if (el) { const r = el.getBoundingClientRect(); menu({ clientX: r.left, clientY: r.bottom }) } return }
     const spans = body.querySelectorAll('.el.sel .tagname, .el.sel .pv')
     const first = spans[0]; if (!first) return
     const net = block().networks[s.network]
@@ -229,19 +246,30 @@ export function mountLadder(host, tab) {
     node.addEventListener('contextmenu', (ev) => { ev.preventDefault(); onSel(ev); menu(ev) })
     return node
   }
-  function wire(flowKey, ctx, grow = false) { const w = h('div', { class: `wire${grow ? ' grow' : ''}`, style: { marginTop: '49px' } }); ctx.wires.push({ el: w, key: flowKey }); return w }
+  function wire(flowKey, ctx, grow = false, gap = null) {
+    const label = gap ? `Wire position ${gap.index + 1}${gap.path.length ? ' in parallel path' : ' on main rung'}` : ''
+    const w = h('div', { class: `wire${grow ? ' grow' : ''}${gap ? ' wire-slot' : ''}`, style: { marginTop: '49px' }, ...(gap ? { role: 'button', tabindex: '0', 'aria-label': label, title: `${label}: select to insert an instruction or start/close a branch`, dataset: { gap: JSON.stringify(gap) } } : {}) }, gap ? h('span', { class: 'gap-mark', 'aria-hidden': 'true' }, '+') : null)
+    if (gap) {
+      const selectGap = e => { e.stopPropagation(); setSel({ network: ctx.ni, gap }) }
+      w.addEventListener('mousedown', selectGap)
+      w.addEventListener('focus', () => setSel({ network: ctx.ni, gap }))
+      w.addEventListener('contextmenu', e => { e.preventDefault(); selectGap(e); menu(e) })
+    }
+    ctx.wires.push({ el: w, key: flowKey }); return w
+  }
   function series(list, base, ni, ctx, startKey) {
     const row = h('div', { class: 'series' })
-    row.append(wire(startKey, ctx))
+    row.append(wire(startKey, ctx, false, { path: base, index: 0 }))
     list.forEach((e, i) => {
       const path = [...base, i]
-      if (e.k === 'branch') row.append(branchNode(e, path, ni, ctx), wire(key(path), ctx))
-      else row.append(elementNode(e, path, ni, ctx), wire(key(path), ctx))
+      if (e.k === 'branch') row.append(branchNode(e, path, ni, ctx), wire(key(path), ctx, false, { path: base, index: i + 1 }))
+      else row.append(elementNode(e, path, ni, ctx), wire(key(path), ctx, false, { path: base, index: i + 1 }))
     })
     return row
   }
   function branchNode(e, path, ni, ctx) {
-    const wrap = h('div', { class: 'branch', dataset: { path: key(path) } })
+    const wrap = h('div', { class: `branch${e.closed === false ? ' branch-open' : ''}`, dataset: { path: key(path) } })
+    wrap.addEventListener('mousedown', ev => { if (ev.target === wrap || ev.target.classList.contains('lbar')) { ev.stopPropagation(); setSel({ network: ni, branch: path }) } })
     e.branches.forEach((lane, li) => {
       const lp = [...path, li], cls = e.branches.length === 1 ? 'first last' : li === 0 ? 'first' : li === e.branches.length - 1 ? 'last' : 'mid'
       const laneEl = h('div', { class: `lane ${cls}`, style: { position: 'relative', paddingBottom: '8px' }, dataset: { path: key(lp) } })
@@ -281,9 +309,13 @@ export function mountLadder(host, tab) {
     const collapsed = net.collapsed
     const title = h('input', { class: 'ntitle', value: net.title ?? '', placeholder: 'Title…', onInput: (ev) => edit((p) => { p.blocks.find((x) => x.id === blockId).networks[ni].title = ev.target.value }, `nt:${net.id}`), onMousedown: (ev) => ev.stopPropagation() })
     const comment = h('input', { class: 'net-comment', value: net.comment ?? '', placeholder: 'Comment…', onInput: (ev) => edit((p) => { p.blocks.find((x) => x.id === blockId).networks[ni].comment = ev.target.value }, `nc:${net.id}`), onMousedown: (ev) => ev.stopPropagation() })
-    const el = h('div', { class: 'net', dataset: { ni } },
-      h('div', { class: 'net-head' }, h('span', { class: 'tw', onClick: () => edit((p) => { const n = p.blocks.find((x) => x.id === blockId).networks[ni]; n.collapsed = !n.collapsed }) }, collapsed ? '▶' : '▼'), `Network ${ni + 1}:`, title),
-      collapsed ? null : [comment, body2])
+    const issues = validateLadderNetwork(net), open = openBranches(net).length > 0
+    const el = h('div', { class: `net${issues.length ? ' unfinished' : ''}`, dataset: { ni } },
+      h('div', { class: 'net-head' }, h('span', { class: 'tw', onClick: () => edit((p) => { const n = p.blocks.find((x) => x.id === blockId).networks[ni]; n.collapsed = !n.collapsed }) }, collapsed ? '▶' : '▼'), `Network ${ni + 1}:`, title,
+        h('button', { type: 'button', class: 'rung-add', title: 'Insert a network / rung below this one', onMousedown: e => e.stopPropagation(), onClick: () => { setSel({ network: ni }); insertNetwork(true) } }, '+ Rung')),
+      issues.length ? h('div', { class: 'rung-warning', role: 'status' }, issues.map(i => h('div', null, i.message))) : null,
+      collapsed ? null : [comment, body2,
+        open ? h('div', { class: 'branch-actions' }, h('span', null, 'Select a return wire on the main rung (or the parent parallel path).'), h('button', { type: 'button', class: 'btn', onMousedown: e => e.stopPropagation(), onClick: () => { if (sel()?.network !== ni) setSel({ network: ni }); insert('closeBranch') } }, 'Close branch · Shift+F9')) : null])
     el.addEventListener('mousedown', () => setSel({ network: ni }))
     el.addEventListener('contextmenu', (ev) => { ev.preventDefault(); if (sel()?.network !== ni) setSel({ network: ni }); menu(ev) })
     el.addEventListener('dragover', (ev) => { ev.preventDefault(); body2.classList.add('drop-over') })
@@ -292,8 +324,9 @@ export function mountLadder(host, tab) {
       ev.preventDefault(); body2.classList.remove('drop-over')
       try {
         const p = JSON.parse(ev.dataTransfer.getData('text/plain')); if (!p.lad) return
+        const slot = ev.target.closest?.('[data-gap]')
         const t = ev.target.closest?.('[data-path]'); const path = t && !t.classList.contains('branch') && t.dataset.path && !t.dataset.path.startsWith('c') ? t.dataset.path.split('.').map(Number) : null
-        dropPayload(p.lad, { network: ni, ...(path ? { path } : {}) })
+        dropPayload(p.lad, { network: ni, ...(slot ? { gap: JSON.parse(slot.dataset.gap) } : path ? { path } : {}) })
       } catch { /* not ours */ }
     })
     refs.nets.set(ni, { el, ctx })
@@ -303,7 +336,7 @@ export function mountLadder(host, tab) {
   function menu(ev) {
     const ins = (label, kind, keys) => ({ label, keys, run: () => insert(kind) })
     contextMenu(ev.clientX, ev.clientY, [
-      ins('Insert normally open contact', 'NO', 'Shift+F2'), ins('Insert normally closed contact', 'NC', 'Shift+F3'), ins('Insert output coil', 'coil', 'Shift+F7'), ins('Insert open branch', 'branch', 'Shift+F8'), ins('Insert TON timer', 'box:TON'), ins('Insert comparison', 'cmp', 'Shift+F10'),
+      ins('Insert normally open contact', 'NO', 'Shift+F2'), ins('Insert normally closed contact', 'NC', 'Shift+F3'), ins('Insert output coil', 'coil', 'Shift+F7'), ins('Start branch here', 'branch', 'Shift+F8'), ins('Close branch at selected wire', 'closeBranch', 'Shift+F9'), ins('Add parallel path to this branch', 'addPath'), ins('Remove branch, keep upper path', 'removeBranch'), ins('Insert TON timer', 'box:TON'), ins('Insert comparison', 'cmp', 'Shift+F10'),
       '-', { label: 'Insert network', keys: 'Ctrl+R', run: () => insertNetwork(true) }, { label: 'Insert network above', run: () => insertNetwork(false) },
       '-', { label: 'Copy network', keys: 'Ctrl+C', run: copy }, { label: 'Paste network', keys: 'Ctrl+V', run: paste, disabled: state.clipboard?.kind !== 'network' },
       '-', { label: 'Delete', keys: 'Delete', run: remove },
@@ -335,8 +368,9 @@ export function mountLadder(host, tab) {
   function paint() {
     const live = isOnline() && state.monitor !== false
     for (const [ni, { el, ctx }] of refs.nets) {
-      el.classList.toggle('mon', live)
-      if (!live) { for (const w of ctx.wires) w.el.classList.remove('t', 'f'); for (const n of ctx.els.values()) { n.classList.remove('t', 'f'); n.querySelector('.val')?.replaceChildren(); n.querySelectorAll('.live.ov').forEach((x) => { x.textContent = '' }) } el.querySelectorAll('.lbar').forEach((x) => x.classList.remove('t')); continue }
+      const complete = live && !validateLadderNetwork(block().networks[ni]).length
+      el.classList.toggle('mon', complete)
+      if (!complete) { for (const w of ctx.wires) w.el.classList.remove('t', 'f'); for (const n of ctx.els.values()) { n.classList.remove('t', 'f'); n.querySelector('.val')?.replaceChildren(); n.querySelectorAll('.live.ov').forEach((x) => { x.textContent = '' }) } el.querySelectorAll('.lbar').forEach((x) => x.classList.remove('t')); continue }
       const net = block().networks[ni], map = new Map()
       const out = evalSeries(net.elements, [], true, map)
       map.set('S', true); map.set('OUT', out)
@@ -366,7 +400,7 @@ export function mountLadder(host, tab) {
     root.replaceChildren()
     refs.nets.clear()
     b.networks.forEach((n, i) => root.append(network(n, i)))
-    root.append(h('div', { class: 'insert-hint' }, 'Right-click a network or press Ctrl+R to insert a network. Drag instructions from the task card, or use Shift+F2 / Shift+F3 / Shift+F7.'))
+    root.append(h('button', { type: 'button', class: 'add-network', onClick: () => insertNetwork(true) }, '+ Add network / rung'), h('div', { class: 'insert-hint' }, 'Select a wire (+) to insert before, between or after instructions. Start branch: Shift+F8. Add its instructions, select the return wire, then close: Shift+F9. Add a rung: Ctrl+R.'))
     root.style.zoom = zoom
     body.scrollTop = scroll
     applySelection()
@@ -379,12 +413,14 @@ export function mountLadder(host, tab) {
     r.el.classList.add('sel')
     const el = s.coil !== undefined ? r.ctx.els.get(`c${s.coil}`) : s.path?.length % 2 ? r.ctx.els.get(key(s.path)) : null
     el?.classList.add('sel')
+    if (s.gap) for (const wire of r.el.querySelectorAll('[data-gap]')) wire.classList.toggle('sel', wire.dataset.gap === JSON.stringify(s.gap))
+    if (s.branch) for (const branch of r.el.querySelectorAll('.branch')) branch.classList.toggle('sel', branch.dataset.path === key(s.branch))
     if (el) el.scrollIntoView({ block: 'nearest', inline: 'nearest' })
     if (pendingEdit) { pendingEdit = false; setTimeout(edit0, 20) }
   }
 
   const offs = [
-    on('project', (e) => { if (!block()) return; if (e?.reason === 'edit' && document.querySelector('.op-edit')) return; render() }),
+    on('project', (e) => { if (!block()) return; if (e?.reason === 'edit' && document.querySelector('.op-edit')) return; if (e?.reason === 'undo') state.selection = { block: blockId, network: Math.max(0, Math.min(sel()?.network ?? 0, block().networks.length - 1)) }; render() }),
     on('selection', () => applySelection()),
     on('tick', () => paint()),
     on('online', () => paint()),
@@ -395,4 +431,3 @@ export function mountLadder(host, tab) {
   if (!sel() && block().networks.length) select({ block: blockId, network: 0 })
   return { dispose() { offs.forEach((f) => f()); if (editor.api && host.contains(root)) editor.api = null }, focus() { render() } }
 }
-void emit

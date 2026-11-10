@@ -1,65 +1,76 @@
 // Block interface table, PLC tag table and watch table.
 import { validateTags } from '../../core/codegen.js'
-import { IDENT, TYPES, iecAddress, uid } from '../../core/model.js'
+import { IDENT, iecAddress, uid } from '../../core/model.js'
 import { parseTimeLiteral } from '../../runtime/values.mjs'
 import { editor } from '../commands.js'
 import { h, svg } from '../dom.js'
 import { isOnline, readOperand, writeTag } from '../online.js'
 import { blockById, edit, on, state } from '../store.js'
-
-const typeList = () => h('datalist', { id: 'dl-types' }, [...TYPES, 'TON', 'TOF', 'CTU', 'CTD', 'R_TRIG', 'F_TRIG', 'SR', 'RS', ...state.project.blocks.filter((b) => b.kind === 'FB').map((b) => b.name)].map((v) => h('option', { value: v })))
+import { typePicker } from '../type-picker.js'
 
 /* ------------------------------------------------------------ interface -- */
 const SECTIONS = { OB: [['temp', 'Temp'], ['static', 'Static']], FB: [['input', 'Input'], ['output', 'Output'], ['inout', 'InOut'], ['static', 'Static'], ['temp', 'Temp']], FC: [['input', 'Input'], ['output', 'Output'], ['inout', 'InOut'], ['temp', 'Temp']] }
 
 export function interfaceTable(blockId) {
   const wrap = h('details', { class: 'iface', open: true })
+  let pickers = []
   const render = () => {
     const b = blockById(blockId); if (!b) return
+    pickers.forEach(p => p.dispose()); pickers = []
     const rows = []
     for (const [key, title] of SECTIONS[b.kind]) {
       const vars = b.interface[key] ?? []
       vars.forEach((v, i) => {
         const bad = !IDENT.test(v.name)
+        const picker = typePicker({ project: () => state.project, block: () => blockById(blockId), instances: true,
+          value: () => blockById(blockId)?.interface[key]?.[i]?.type ?? '', label: `Data type for ${b.name} ${title} ${v.name}`,
+          change: value => edit(p => { p.blocks.find(x => x.id === blockId).interface[key][i].type = value }, `if:${blockId}:${key}:${i}:type`) })
+        pickers.push(picker)
         rows.push(h('tr', null,
           h('td', { class: 'ro' }, title),
           h('td', null, h('input', { value: v.name, class: bad ? 'bad' : '', onInput: (e) => edit((p) => { p.blocks.find((x) => x.id === blockId).interface[key][i].name = e.target.value }, `if:${blockId}:${key}:${i}:n`) })),
-          h('td', null, h('input', { value: v.type, list: 'dl-types', onChange: (e) => edit((p) => { p.blocks.find((x) => x.id === blockId).interface[key][i].type = e.target.value }) })),
+          h('td', null, picker.el),
           h('td', null, h('input', { value: v.init ?? '', placeholder: 'default', onInput: (e) => edit((p) => { p.blocks.find((x) => x.id === blockId).interface[key][i].init = e.target.value }, `if:${blockId}:${key}:${i}:i`) })),
           h('td', { class: 'ro', style: { width: '28px', textAlign: 'center', cursor: 'pointer', color: '#d03030' }, title: 'Delete', onClick: () => { edit((p) => p.blocks.find((x) => x.id === blockId).interface[key].splice(i, 1)); render() } }, '×')))
       })
       rows.push(h('tr', { class: 'add', onClick: () => { edit((p) => p.blocks.find((x) => x.id === blockId).interface[key].push({ name: `${title}_${vars.length + 1}`, type: 'Bool' })); render() } }, h('td', { class: 'ro' }, title), h('td', { colspan: 4 }, '<Add new>')))
     }
-    wrap.replaceChildren(h('summary', null, `Interface of ${b.name}`), typeList(), h('table', { class: 'grid' }, h('thead', null, h('tr', null, ['Section', 'Name', 'Data type', 'Default value', ''].map((x) => h('th', null, x)))), h('tbody', null, rows)))
+    wrap.replaceChildren(h('summary', null, `Interface of ${b.name}`), h('table', { class: 'grid' }, h('thead', null, h('tr', null, ['Section', 'Name', 'Data type', 'Default value', ''].map((x) => h('th', null, x)))), h('tbody', null, rows)))
   }
   render()
-  return { el: wrap, render }
+  return { el: wrap, render, refresh(reason) { if (reason === 'edit' && wrap.contains(document.activeElement)) pickers.forEach(p => p.refresh()); else render() }, dispose() { pickers.forEach(p => p.dispose()) } }
 }
 
 /* ------------------------------------------------------------- tag table -- */
 const fmt = (v) => (v === undefined ? '' : typeof v === 'boolean' ? (v ? 'TRUE' : 'FALSE') : typeof v === 'number' && Math.abs(v) >= 1e6 ? `T#${(v / 1e6).toFixed(0)}ms` : String(v))
 export function mountTags(host) {
   const body = h('div', { class: 'ed-body' })
+  let pickers = []
   host.append(h('div', { class: 'ed-head' }, h('span', { class: 'title' }, `${state.project.plc.name} › PLC tags › Default tag table`), h('span', { class: 'grow' })), body)
   const render = () => {
+    pickers.forEach(p => p.dispose()); pickers = []
     const errs = validateTags(state.project)
     const bad = (i, kind) => errs.some((e) => e.tag === state.project.tags[i].name && (kind === 'name' ? /name|twice/.test(e.message) : /ddress/.test(e.message)))
     const live = isOnline()
-    const rows = state.project.tags.map((t, i) => h('tr', { dataset: { i } },
+    const rows = state.project.tags.map((t, i) => {
+      const picker = typePicker({ project: () => state.project, value: () => state.project.tags[i]?.type ?? '', label: `Data type for tag ${t.name}`, change: value => edit(p => { p.tags[i].type = value }, `tag:${i}:type`) })
+      pickers.push(picker)
+      return h('tr', { dataset: { i } },
       h('td', { class: 'ro', style: { width: '30px', textAlign: 'center' } }, i + 1),
       h('td', null, h('input', { value: t.name, class: bad(i, 'name') ? 'bad' : '', onInput: (e) => { const old = state.project.tags[i].name; edit((p) => { p.tags[i].name = e.target.value; if (old !== e.target.value) p.watch.forEach((w) => { w.rows = w.rows.map((r) => (r === old ? e.target.value : r)) }) }, `tag:${i}:n`) } })),
-      h('td', null, h('select', { onChange: (e) => { edit((p) => { p.tags[i].type = e.target.value }); render() } }, TYPES.map((x) => h('option', { value: x, selected: x === t.type }, x)))),
+      h('td', null, picker.el),
       h('td', null, h('input', { value: t.address ?? '', class: bad(i, 'addr') ? 'bad' : '', placeholder: '%I0.0', onInput: (e) => edit((p) => { p.tags[i].address = e.target.value }, `tag:${i}:a`) })),
       live ? h('td', { class: `val ${t.type === 'Bool' ? (readOperand('', t.name) ? 't' : 'f') : ''}`, dataset: { mon: t.name } }, fmt(readOperand('', t.name))) : null,
       h('td', null, h('input', { value: t.comment ?? '', onInput: (e) => edit((p) => { p.tags[i].comment = e.target.value }, `tag:${i}:c`) })),
-      h('td', { class: 'ro', style: { width: '28px', textAlign: 'center', cursor: 'pointer', color: '#d03030' }, title: 'Delete tag', onClick: () => { edit((p) => p.tags.splice(i, 1)); render() } }, '×')))
+      h('td', { class: 'ro', style: { width: '28px', textAlign: 'center', cursor: 'pointer', color: '#d03030' }, title: 'Delete tag', onClick: () => { edit((p) => p.tags.splice(i, 1)); render() } }, '×'))
+    })
     rows.push(h('tr', { class: 'add', onClick: () => { edit((p) => p.tags.push({ name: `Tag_${p.tags.length + 1}`, type: 'Bool', address: '', comment: '' })); render(); body.querySelector('tbody tr:nth-last-child(2) input')?.select() } }, h('td', { class: 'ro' }, '✚'), h('td', { colspan: live ? 6 : 5 }, '<Add new>')))
     body.replaceChildren(h('table', { class: 'grid' }, h('thead', null, h('tr', null, ['', 'Name', 'Data type', 'Address', live ? 'Monitor value' : null, 'Comment', ''].map((x) => (x === null ? null : h('th', null, x))))), h('tbody', null, rows)), h('div', { class: 'insert-hint' }, 'Addresses: %I0.0 inputs, %Q0.0 outputs, %M0.0 memory bits, %MW10 memory words. A tag without an address is an internal variable.'),
       errs.length ? h('div', { class: 'insert-hint', style: { color: '#d03030' } }, errs.map((e) => e.message).join(' · ')) : null)
   }
   render()
-  const offs = [on('project', ({ reason } = {}) => { if (reason !== 'edit') render() }), on('online', render), on('tick', () => { for (const c of body.querySelectorAll('[data-mon]')) { const v = readOperand('', c.dataset.mon); c.textContent = fmt(v); if (typeof v === 'boolean') c.className = `val ${v ? 't' : 'f'}` } })]
-  return { dispose: () => offs.forEach((f) => f()) }
+  const offs = [on('project', ({ reason } = {}) => { if (reason !== 'edit') render(); else pickers.forEach(p => p.refresh()) }), on('online', render), on('tick', () => { for (const c of body.querySelectorAll('[data-mon]')) { const v = readOperand('', c.dataset.mon); c.textContent = fmt(v); if (typeof v === 'boolean') c.className = `val ${v ? 't' : 'f'}` } })]
+  return { dispose: () => { offs.forEach(f => f()); pickers.forEach(p => p.dispose()) } }
 }
 
 /* ----------------------------------------------------------- watch table -- */

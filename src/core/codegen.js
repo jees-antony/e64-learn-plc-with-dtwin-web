@@ -4,6 +4,8 @@
 
 import { COMPARE, DEFAULT_PIN, FB, LOGIC, MATH, ST_OP } from './catalog.js'
 import { IDENT, iecAddress, iecType } from './model.js'
+import { checkType, validateInterfaces } from './types.js'
+import { validateLadderNetwork } from './ladder-edit.js'
 
 const LITERAL = /^(?:[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?|T#[0-9a-zA-Z_.]+|TRUE|FALSE|16#[0-9A-Fa-f]+|'[^']*')$/i
 const WORD = /[A-Za-z_][A-Za-z0-9_]*/g
@@ -71,7 +73,7 @@ function ladNetwork(net, scope, ctx, err) {
           break
         }
         case 'branch': {
-          const parts = (e.branches ?? []).map((b) => { const f = series(b, 'TRUE'); return f })
+          const parts = (e.branches ?? []).map((b) => series(b, flow))
           const any = parts.length ? parts.join(' OR ') : 'TRUE'
           const g = parts.length > 1 ? `(${any})` : any
           flow = flow === 'TRUE' ? g : `${flow} AND ${g}`
@@ -156,6 +158,8 @@ export function validateTags(project) {
   const errors = [], seen = new Set(), addresses = new Set()
   for (const t of project.tags) {
     const at = { where: 'tags', tag: t.name }
+    const type = checkType(project, t.type)
+    if (!type.ok) errors.push({ ...at, field: 'type', message: `${t.name}: ${type.message}` })
     if (!IDENT.test(t.name ?? '')) errors.push({ ...at, message: `Tag name "${t.name}" is not a valid identifier (letters, digits, underscore)` })
     if (seen.has(t.name)) errors.push({ ...at, message: `Tag "${t.name}" is defined twice` })
     seen.add(t.name)
@@ -168,7 +172,7 @@ export function validateTags(project) {
 
 export function generate(project) {
   const out = new Out()
-  const errors = [...validateTags(project)]
+  const errors = [...validateTags(project), ...validateInterfaces(project)]
   const usedTagsByBlock = new Map()
   const blockText = (b) => {
     const scope = scopeOf(project, b)
@@ -181,6 +185,7 @@ export function generate(project) {
       (b.networks ?? []).forEach((net, i) => {
         const info = { block: b.id, network: i }
         const err = (message) => errors.push({ where: 'network', block: b.id, network: i, message })
+        if (b.lang === 'LAD') for (const issue of validateLadderNetwork(net)) errors.push({ where: 'network', block: b.id, network: i, ...issue })
         body.add(`(* Network ${i + 1}${net.title ? `: ${String(net.title).replace(/\*\)/g, '')}` : ''} *)`, info)
         const stmts = b.lang === 'FBD' ? fbdNetwork(net, scope, ctx, err) : ladNetwork(net, scope, ctx, err)
         for (const s of stmts) body.add(s, info)

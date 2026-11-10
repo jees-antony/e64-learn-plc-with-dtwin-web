@@ -200,6 +200,37 @@ table.grid td.val.t { color: var(--true); font-weight: 700; } table.grid td.val.
 .iface { border-bottom: 1px solid var(--line); background: var(--pane); max-height: 190px; overflow: auto; flex: none; }
 .iface summary { padding: 3px 8px; background: var(--head2); font-weight: 600; cursor: pointer; color: var(--navy2); position: sticky; top: 0; z-index: 2; }
 
+/* Declaration assistance and explicit ladder connection points. */
+.type-picker { min-width: 145px; position: relative; }
+.type-input { display: flex; align-items: stretch; }
+.type-input input { width: 100%; min-width: 65px; height: 24px; border: 1px solid transparent; padding: 2px 6px; background: transparent; font: inherit; outline: none; }
+.type-input input:focus { background: #fff8e1; border-color: var(--petrol); }
+.type-input input.bad { border-color: #c7372f; background: #fff0ee; }
+.type-arrow { width: 25px; flex: none; border: 0; border-left: 1px solid var(--line2); color: var(--navy2); background: #e3ebf0; cursor: pointer; }
+.type-error { color: #ab2b20; padding: 3px 6px; max-width: 290px; font-size: 10px; line-height: 1.35; }
+.type-error:empty { display: none; }
+.type-options { position: fixed; z-index: 10000; overflow-y: auto; border: 1px solid #477b91; background: white; color: #172b3b; box-shadow: 0 5px 16px #142b3930; padding: 3px; }
+.type-options[hidden] { display: none; }
+.type-options button { display: flex; justify-content: space-between; align-items: center; gap: 15px; width: 100%; padding: 7px 8px; border: 0; background: white; color: #172b3b; text-align: left; cursor: pointer; }
+.type-options button.active, .type-options button:hover { background: #dceef1; }
+.type-options small { color: #667887; font-size: 10px; }
+.type-empty { padding: 10px; color: #875135; font-size: 11px; }
+.wire-slot { position: relative; width: 30px; cursor: crosshair; outline: none; }
+.wire-slot::before { content: ''; position: absolute; inset: -12px 0 auto; height: 26px; }
+.gap-mark { display: none; position: absolute; left: 50%; top: -10px; transform: translateX(-50%); width: 18px; height: 18px; border: 1px solid #448b98; border-radius: 3px; background: #edfafa; color: #146a77; line-height: 15px; text-align: center; font-size: 16px; z-index: 2; pointer-events: none; }
+.wire-slot:hover .gap-mark, .wire-slot.sel .gap-mark, .wire-slot:focus .gap-mark { display: block; }
+.wire-slot.sel { border-top-color: #00848c; }
+.branch.sel { outline: 2px solid #21a5ad; outline-offset: 4px; }
+.branch .lbar { pointer-events: auto; cursor: pointer; }
+.branch-open > .lane > .lbar.r { display: none; }
+.branch-open > .lane:last-child::after { content: 'OPEN'; position: absolute; right: 0; top: 52px; font: bold 9px var(--mono); color: #b36416; background: #fff5df; padding: 1px 3px; }
+.net.unfinished { border-color: #c9994e; }
+.rung-warning { padding: 6px 10px; background: #fff4d9; border-bottom: 1px solid #e1c38d; color: #7d4b0c; font-size: 11px; line-height: 1.6; white-space: normal; }
+.branch-actions { display: flex; align-items: center; gap: 12px; padding: 8px 10px; background: #fff9ed; color: #775622; font-size: 11px; }
+.branch-actions button { white-space: nowrap; }
+.rung-add { border: 1px solid #9cbbc9; border-radius: 2px; background: #edf5f8; color: #1c596f; font: inherit; font-size: 10px; padding: 2px 6px; cursor: pointer; }
+.add-network { display: block; margin: 12px 0; padding: 8px 15px; border: 1px dashed #6c98aa; background: #e8f2f6; color: #225c71; cursor: pointer; font: inherit; }
+
 /* ---- task cards ---- */
 #right { flex-direction: row; }
 #cardbody { flex: 1; min-width: 0; display: flex; flex-direction: column; }
