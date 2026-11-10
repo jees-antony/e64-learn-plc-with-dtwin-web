@@ -1,0 +1,23 @@
+{
+  "name": "plc-web-studio",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Browser PLC engineering studio: LAD, FBD and SCL editors, in-browser compiler and virtual CPU, Siemens-style theme and shortcuts",
+  "license": "GPL-3.0-only",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "serve": "node scripts/serve.mjs",
+    "test": "node --test tests/*.test.mjs"
+  },
+  "dependencies": {
+    "@codemirror/autocomplete": "^6.20.4",
+    "@codemirror/commands": "^6.11.1",
+    "@codemirror/language": "^6.13.1",
+    "@codemirror/state": "^6.7.6",
+    "@codemirror/view": "^6.43.15",
+    "codemirror": "^6.0.2",
+    "esbuild": "^0.25.12",
+    "strucpp": "https://github.com/Autonomy-Logic/STruCpp/releases/download/v0.7.0/strucpp-0.7.0.tgz"
+  }
+}
