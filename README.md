@@ -11,6 +11,26 @@ npm run serve                  # http://localhost:5190
 npm test                       # codegen + virtual CPU tests (Node)
 ```
 
+## Workspace
+
+The rail on the left has two tabs:
+
+- **Digital twin**: a 3D water tank T1 (500 L) with fill valve Y1, drain valve Y2, level switches B1 (20 %) and B2 (80 %), an operator station with push buttons S1 FILL and S2 DRAIN, and the open control panel +CP1. The panel holds MCB F1, the 24 V power supply G1, PLC A1, interface relays K1 and K2 and terminal strip X1, with every wire drawn and numbered. Live wires glow, the PLC and relay LEDs follow the I/O, and a wire can be traced from the 3D view or the wiring list.
+- **PLC programming**: the engineering studio below.
+
+The twin is wired to the virtual CPU by address, like real hardware:
+
+| Address | Device | Meaning |
+|---|---|---|
+| `%I0.0` | S1 | FILL push button, TRUE while pressed |
+| `%I0.1` | S2 | DRAIN push button, TRUE while pressed |
+| `%I0.2` | B1 | TRUE when the water is above 20 % |
+| `%I0.3` | B2 | TRUE when the water is above 80 % |
+| `%Q0.0` | K1 → Y1 | opens the fill valve |
+| `%Q0.1` | K2 → Y2 | opens the drain valve |
+
+The tank keeps running while you are on the programming tab. In STOP the outputs drop and both valves close. The starting project (`tankProject()`) fills with S1 until B2 and drains with S2 until B1. The twin's data and process model are in `src/twin/tank-model.js`, and `tests/twin.test.mjs` runs that program against the tank model.
+
 ## Workflow
 
 1. Edit blocks (Main [OB1] is the cyclic program), tags (PLC tags → `%I0.0`, `%Q0.0`, `%MW10` …) and watch tables.

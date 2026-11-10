@@ -1,14 +1,14 @@
 // Application state: the project, selection, tabs, online session. Views subscribe to events.
-import { sampleProject } from '../core/model.js'
+import { tankProject } from '../core/model.js'
 
-const KEY = 'plcweb.project.v1'
+const KEY = 'plcweb.project.v2'   // v2: the water tank twin project (v1 projects stay in storage untouched)
 const listeners = new Map()
 export const on = (event, fn) => { if (!listeners.has(event)) listeners.set(event, new Set()); listeners.get(event).add(fn); return () => listeners.get(event).delete(fn) }
 export const emit = (event, data) => { for (const fn of listeners.get(event) ?? []) fn(data) }
 
 function load() {
   try { const raw = localStorage.getItem(KEY); if (raw) return JSON.parse(raw) } catch { /* corrupt or unavailable */ }
-  return sampleProject()
+  return tankProject()
 }
 
 export const state = {

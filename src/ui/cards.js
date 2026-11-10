@@ -3,6 +3,7 @@ import { editor } from './commands.js'
 import { h } from './dom.js'
 import { download, goOffline, goOnline, isOnline, runCpu, startSimulation, stopCpu, writeTag, readOperand } from './online.js'
 import { iconFor, PALETTE } from './palette.js'
+import { press, twinInput } from '../twin/link.js'
 import { emit, on, state } from './store.js'
 
 export function instructionsCard() {
@@ -52,7 +53,11 @@ export function simulationCard() {
       h('div', { class: 'io-title' }, 'Inputs'),
       h('div', { class: 'io' }, bits('I').map((t) => {
         const sw = h('div', { class: 'sw', dataset: { tag: t.name }, title: `${t.name} ${t.address}\nClick: toggle · Alt+hold: push button` }, h('div', { class: 'knob' }), h('span', { class: 'nm' }, t.name), h('span', { class: 'ad' }, t.address.toUpperCase()))
-        sw.addEventListener('mousedown', (e) => { if (!live) return; const now = !!readOperand('', t.name); if (e.altKey) { writeTag(t.name, true); const up = () => { writeTag(t.name, false); removeEventListener('mouseup', up) }; addEventListener('mouseup', up) } else writeTag(t.name, !now) })
+        const ti = twinInput(t.address)
+        if (ti) sw.title = ti.kind === 'button' ? `${t.name} ${t.address}\nWired to push button ${ti.id} in the digital twin: hold to press.` : `${t.name} ${t.address}\nWired to level switch ${ti.id}: the tank level sets it.`
+        sw.addEventListener('mousedown', (e) => {
+          if (ti) { if (ti.kind === 'button') { press(ti.id, true); const up = () => { press(ti.id, false); removeEventListener('mouseup', up) }; addEventListener('mouseup', up) } return }
+          if (!live) return; const now = !!readOperand('', t.name); if (e.altKey) { writeTag(t.name, true); const up = () => { writeTag(t.name, false); removeEventListener('mouseup', up) }; addEventListener('mouseup', up) } else writeTag(t.name, !now) })
         return sw
       }), bits('I').length ? null : h('div', { class: 'insert-hint', style: { gridColumn: '1 / -1' } }, 'No Bool tags with %I addresses.')),
       h('div', { class: 'io-title' }, 'Outputs'),

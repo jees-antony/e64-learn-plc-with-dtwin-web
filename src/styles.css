@@ -14,7 +14,17 @@
 }
 * { box-sizing: border-box; }
 html, body { height: 100%; margin: 0; }
-body { font: var(--fs)/1.35 var(--sans); color: var(--text); background: var(--bg); overflow: hidden; display: grid; grid-template-rows: 28px 24px 30px minmax(0, 1fr) 22px; user-select: none; }
+body { font: var(--fs)/1.35 var(--sans); color: var(--text); background: var(--bg); overflow: hidden; display: grid; grid-template-columns: 76px minmax(0, 1fr); grid-template-rows: 28px minmax(0, 1fr); user-select: none; }
+#titlebar { grid-column: 1 / -1; }
+#ide { grid-column: 2; grid-row: 2; display: grid; grid-template-rows: 24px 30px minmax(0, 1fr) 22px; min-height: 0; min-width: 0; }
+#twin { grid-column: 2; grid-row: 2; min-height: 0; min-width: 0; }
+/* workspace rail */
+#rail { grid-column: 1; grid-row: 2; background: var(--navy2); display: flex; flex-direction: column; gap: 2px; padding-top: 6px; }
+.rail-tab { border: 0; background: none; color: #b8c6d3; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 12px 4px; font-size: 11px; line-height: 1.2; text-align: center; border-left: 3px solid transparent; }
+.rail-tab svg { width: 26px; height: 26px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.rail-tab:hover { background: #ffffff12; color: #fff; }
+.rail-tab.on { background: #ffffff1c; color: #fff; border-left-color: var(--petrol); }
+.rail-tab:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
 input, select, textarea, button { font: inherit; color: inherit; }
 button { cursor: pointer; }
 [hidden] { display: none !important; }

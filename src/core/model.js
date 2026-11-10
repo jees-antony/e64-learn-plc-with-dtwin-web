@@ -37,6 +37,36 @@ export function newBlock(kind, name, lang, number) {
   }
 }
 
+/** Starting project for the water tank twin: I/O tags at the wired addresses and a fill / drain program. */
+export function tankProject() {
+  const p = {
+    version: 1, name: 'Tank_T1',
+    plc: { name: 'PLC_1', cycleMs: 10 },
+    tags: [
+      { name: 'S1_Fill', type: 'Bool', address: '%I0.0', comment: 'Fill push button S1 (NO): TRUE while pressed' },
+      { name: 'S2_Drain', type: 'Bool', address: '%I0.1', comment: 'Drain push button S2 (NO): TRUE while pressed' },
+      { name: 'B1_LevelLow', type: 'Bool', address: '%I0.2', comment: 'Low level switch B1: TRUE when the water is above 20 %' },
+      { name: 'B2_LevelHigh', type: 'Bool', address: '%I0.3', comment: 'High level switch B2: TRUE when the water is above 80 %' },
+      { name: 'K1_FillValve', type: 'Bool', address: '%Q0.0', comment: 'Relay K1: opens fill valve Y1' },
+      { name: 'K2_DrainValve', type: 'Bool', address: '%Q0.1', comment: 'Relay K2: opens drain valve Y2' },
+    ],
+    blocks: [],
+    watch: [{ id: uid('w'), name: 'Watch table_1', rows: ['S1_Fill', 'S2_Drain', 'B1_LevelLow', 'B2_LevelHigh', 'K1_FillValve', 'K2_DrainValve'] }],
+  }
+  const main = newBlock('OB', 'Main', 'LAD', 1)
+  main.comment = 'Tank T1: fill with S1 until the high level switch, drain with S2 until the low level switch.'
+  main.networks = [
+    { id: uid('n'), title: 'Fill the tank', comment: 'S1 starts filling (seal-in). Filling stops at the high level (B2) or when S2 is pressed.',
+      elements: [{ k: 'branch', branches: [[{ k: 'NO', tag: 'S1_Fill' }], [{ k: 'NO', tag: 'K1_FillValve' }]] }, { k: 'NC', tag: 'B2_LevelHigh' }, { k: 'NC', tag: 'S2_Drain' }],
+      coils: [{ k: 'coil', tag: 'K1_FillValve' }] },
+    { id: uid('n'), title: 'Drain the tank', comment: 'S2 starts draining (seal-in). Draining stops below the low level (B1) or when S1 is pressed.',
+      elements: [{ k: 'branch', branches: [[{ k: 'NO', tag: 'S2_Drain' }], [{ k: 'NO', tag: 'K2_DrainValve' }]] }, { k: 'NO', tag: 'B1_LevelLow' }, { k: 'NC', tag: 'S1_Fill' }],
+      coils: [{ k: 'coil', tag: 'K2_DrainValve' }] },
+  ]
+  p.blocks.push(main)
+  return p
+}
+
 /** A small, working starting project: a start/stop motor with an on-delay lamp. */
 export function sampleProject() {
   const p = {

@@ -1,7 +1,7 @@
 // Command registry: one place for actions, their shortcuts and where each shortcut comes from.
 // `src: 'tia'` marks bindings taken from the S7 engineering-tool convention (assigned from memory of
 // that tool — check them against the tool you know); `src: 'app'` marks bindings this app adds.
-import { newBlock, sampleProject } from '../core/model.js'
+import { newBlock, tankProject } from '../core/model.js'
 import { compile, download, goOffline, goOnline, runCpu, say, startSimulation, stopCpu } from './online.js'
 import { closeTab, edit, emit, openTab, persist, redo, replaceProject, state, undo } from './store.js'
 import { keyString } from './dom.js'
@@ -30,7 +30,7 @@ def('import', 'Open / import project…', 'Ctrl+O', 'tia', () => {
   input.onchange = async () => { try { const p = JSON.parse(await input.files[0].text()); if (!p.blocks || !p.tags) throw new Error('not a project file'); replaceProject(p); toast(`Opened ${p.name}`) } catch (e) { toast(`Cannot open: ${e.message}`) } }
   input.click()
 }, { global: true })
-def('example', 'New project from example', '', 'app', () => { if (!state.dirty || confirm('Replace the current project with the example?')) replaceProject(sampleProject()) })
+def('example', 'New project from example', '', 'app', () => { if (!state.dirty || confirm('Replace the current project with the example?')) replaceProject(tankProject()) })
 
 /* edit */
 def('undo', 'Undo', 'Ctrl+Z', 'tia', () => undo())
@@ -97,6 +97,7 @@ export function installKeyboard() {
     if (!c) return
     const typing = inText(e.target)
     if (typing && !c.global) return
+    if (document.body.dataset.view === 'twin' && !c.global) return   // editor keys do nothing on the twin page
     if (document.querySelector('dialog[open]') && c.id !== 'help') return
     e.preventDefault()
     e.stopPropagation()

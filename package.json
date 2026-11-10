@@ -18,6 +18,7 @@
     "@codemirror/view": "^6.43.15",
     "codemirror": "^6.0.2",
     "esbuild": "^0.25.12",
-    "strucpp": "https://github.com/Autonomy-Logic/STruCpp/releases/download/v0.7.0/strucpp-0.7.0.tgz"
+    "strucpp": "https://github.com/Autonomy-Logic/STruCpp/releases/download/v0.7.0/strucpp-0.7.0.tgz",
+    "three": "^0.170.0"
   }
 }
