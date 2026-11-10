@@ -51,7 +51,7 @@ def('goOffline', 'Go offline', 'Ctrl+M', 'tia', () => goOffline(), { global: tru
 def('simulate', 'Start simulation', 'Ctrl+Shift+X', 'tia', () => { startSimulation(); emit('inspector', 'info') }, { global: true })
 def('run', 'Start CPU', '', 'app', () => runCpu())
 def('stop', 'Stop CPU', '', 'app', () => stopCpu())
-def('monitor', 'Monitoring on / off', 'Ctrl+Shift+M', 'app', () => { state.monitor = state.monitor === false; emit('tick'); emit('online') }, { global: true })
+def('monitor', 'Monitoring on / off', 'Ctrl+Shift+M', 'app', () => { if (E()?.monitor) return E().monitor(); state.monitor = state.monitor === false; emit('tick'); emit('online') }, { global: true })   // a watch table toggles its own "Monitor all"
 
 /* insert (LAD / FBD) */
 def('insertNetwork', 'Insert network', 'Ctrl+R', 'tia', () => E()?.insertNetwork?.())

@@ -2,7 +2,8 @@
 import { validateTags } from '../../core/codegen.js'
 import { IDENT, TYPES, iecAddress, uid } from '../../core/model.js'
 import { parseTimeLiteral } from '../../runtime/values.mjs'
-import { h } from '../dom.js'
+import { editor } from '../commands.js'
+import { h, svg } from '../dom.js'
 import { isOnline, readOperand, writeTag } from '../online.js'
 import { blockById, edit, on, state } from '../store.js'
 
@@ -76,11 +77,18 @@ export function mountWatch(host, tab) {
   const modifyNow = () => {
     wt().rows.forEach((name, i) => { const m = modify.get(i); const tag = state.project.tags.find((t) => t.name === name); if (m?.on && tag) { try { writeTag(name, parseFor(tag.type, m.text)) } catch (e) { alert(e.message) } } })
   }
+  // "Monitor all" (TIA glasses button): per table, off until the user switches it on; Ctrl+Shift+M toggles it while this table is active.
+  const monBtn = h('button', { class: 'btn mon', title: 'Monitor all (Ctrl+Shift+M)', onClick: () => toggleMonitor() },
+    svg('svg', { viewBox: '0 0 24 24' }, svg('path', { d: 'M2 12s4-7 10-7 10 7 10 7-4 7-10 7-10-7-10-7zM12 9a3 3 0 100 6 3 3 0 000-6z' })), 'Monitor all')
+  const toggleMonitor = () => { watchMonitor.set(id, !watchMonitor.get(id)); render() }
   host.append(h('div', { class: 'ed-head' }, h('span', { class: 'title' }, `${state.project.plc.name} › Watch and force tables › ${wt().name}`), h('span', { class: 'grow' }),
-    h('button', { class: 'btn', title: 'Modify all checked values once', onClick: modifyNow }, 'Modify now')), body)
+    monBtn, h('button', { class: 'btn', title: 'Modify all checked values once', onClick: modifyNow }, 'Modify now')), body)
+  editor.api = { monitor: toggleMonitor }
   const render = () => {
     const w = wt(); if (!w) return
-    const live = isOnline()
+    const monitoring = !!watchMonitor.get(id)
+    monBtn.classList.toggle('on', monitoring)
+    const live = isOnline() && monitoring
     const rows = w.rows.map((name, i) => {
       const tag = state.project.tags.find((t) => t.name === name)
       return h('tr', null, h('td', { class: 'ro', style: { width: '30px', textAlign: 'center' } }, i + 1),
@@ -93,10 +101,14 @@ export function mountWatch(host, tab) {
     })
     rows.push(h('tr', { class: 'add', onClick: () => { edit((p) => p.watch.find((x) => x.id === id).rows.push(p.tags[0]?.name ?? '')); render() } }, h('td', { class: 'ro' }, '✚'), h('td', { colspan: 7 }, '<Add new>')))
     body.replaceChildren(h('datalist', { id: 'dl-watch' }, state.project.tags.map((t) => h('option', { value: t.name }))), h('table', { class: 'grid' }, h('thead', null, h('tr', null, ['', 'Name', 'Address', 'Data type', 'Monitor value', 'Modify value', 'Modify', ''].map((x) => h('th', null, x)))), h('tbody', null, rows)),
-      h('div', { class: 'insert-hint' }, live ? 'Online: monitor values refresh ten times a second. Tick "Modify" and press "Modify now" to write a value once; outputs written by the program are overwritten on the next scan.' : 'Offline. Download to the CPU (Ctrl+L) to monitor values.'))
+      h('div', { class: 'insert-hint' }, !monitoring
+        ? (isOnline() ? 'Monitoring is off. Press "Monitor all" (Ctrl+Shift+M) to show the current value of every tag.' : 'Monitoring is off. Press "Monitor all" (Ctrl+Shift+M) and download to the CPU (Ctrl+L) to show current values.')
+        : live ? 'Monitoring: values refresh ten times a second. Tick "Modify" and press "Modify now" to write a value once; outputs written by the program are overwritten on the next scan.'
+          : 'Monitor all is on, but the CPU is offline. Download to the CPU (Ctrl+L) to see values.'))
   }
   render()
-  const offs = [on('project', ({ reason } = {}) => { if (reason !== 'edit') render() }), on('online', render), on('tick', () => { for (const c of body.querySelectorAll('[data-mon]')) { const v = readOperand('', c.dataset.mon); c.textContent = fmt(v); c.className = `val ${v === true ? 't' : v === false ? 'f' : ''}` } })]
-  return { dispose: () => offs.forEach((f) => f()) }
+  const offs = [on('project', ({ reason } = {}) => { if (reason !== 'edit') render() }), on('online', render), on('tick', () => { if (!watchMonitor.get(id) || !isOnline()) return; for (const c of body.querySelectorAll('[data-mon]')) { const v = readOperand('', c.dataset.mon); c.textContent = fmt(v); c.className = `val ${v === true ? 't' : v === false ? 'f' : ''}` } })]
+  return { dispose: () => { offs.forEach((f) => f()); if (editor.api?.monitor === toggleMonitor) editor.api = null } }
 }
+const watchMonitor = new Map()   // watch table id -> monitoring on (kept while the page is open)
 export { uid, iecAddress }

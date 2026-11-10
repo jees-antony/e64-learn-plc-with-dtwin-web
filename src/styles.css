@@ -95,6 +95,9 @@ svg { display: block; }
 .in:focus { outline: 1px solid var(--petrol); border-color: var(--petrol); }
 .in.bad { border-color: var(--err); background: #fdeaea; }
 .btn { height: 22px; padding: 0 10px; border: 1px solid var(--line); background: linear-gradient(#fff, #eef1f3); border-radius: 2px; }
+.btn.mon { display: inline-flex; align-items: center; gap: 5px; margin-right: 6px; }
+.btn.mon svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.8; }
+.btn.mon.on { background: var(--sel); border-color: var(--sel-line); }
 .btn:hover { border-color: var(--petrol); }
 .btn.primary { background: var(--petrol); border-color: var(--petrol-d); color: #fff; }
 
