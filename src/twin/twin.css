@@ -58,7 +58,8 @@ details.tw-sec[open] summary { margin-bottom: 8px; }
 .legend { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 10px; }
 .legend span { display: flex; align-items: center; gap: 6px; }
 .legend i { width: 22px; height: 5px; border-radius: 2px; }
-.tw-wl td, .tw-wl th { padding: 2px 5px; font-size: 11px; }
+.tw-wl.grid td, .tw-wl.grid th { padding: 2px 4px; font-size: 11px; }
+.tw-wl td.mono { white-space: nowrap; }
 .tw-wl tbody tr { cursor: pointer; }
 .tw-wl tbody tr:hover { background: var(--hover); }
 .tw-wl i.sw { width: 12px; }

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { compileProject } from '../src/core/engine.js';
 import { tankProject } from '../src/core/model.js';
-import { CABLES, IO, TANK, TERMINALS, TankProcess, WIRES, routeWire } from '../src/twin/tank-model.js';
+import { CABINET, CABLE_GLANDS, CABLE_PATHS, CABLES, GLAND_HALF_LENGTH, IO, TANK, TERMINALS, TankProcess, WIRES, routeCore, routeFieldCore, routeWire, wiringList } from '../src/twin/tank-model.js';
 
 const lib = n => JSON.parse(readFileSync(new URL(`../node_modules/strucpp/libs/${n}.stlib`, import.meta.url), 'utf8'));
 const LIBS = [lib('iec-std-functions'), lib('iec-standard-fb')];
@@ -61,6 +61,38 @@ test('Wiring data: every wire lands on a real terminal and no terminal joins two
     netAt.set(base, net);
   };
   for (const w of WIRES) { land(w.from, w.net, `wire ${w.id}`); land(w.to, w.net, `wire ${w.id}`); assert.ok(routeWire(w.from, w.to).length >= 4); }
-  for (const c of CABLES) for (const k of c.cores) land(k.at, k.net, `${c.id}.${k.core}`);
+  for (const c of CABLES) for (const k of c.cores) {
+    land(k.at, k.net, `${c.id}.${k.core}`);
+    land(k.to, k.net, `${c.id}.${k.core}`);
+  }
   for (const io of IO) assert.ok(TERMINALS.has(io.terminal), `${io.addr} terminal ${io.terminal}`);
+});
+
+test('Every tank cable joins its own cabinet gland to both sets of termination points', () => {
+  const glands = new Set();
+  const fieldPins = new Set();
+  const rows = new Map(wiringList().map(row => [row.id, row]));
+  for (const cable of CABLES) {
+    const [x, y, z] = CABLE_GLANDS[cable.id];
+    const face = cable.top ? 1 : -1;
+    const [outer, ...jacket] = CABLE_PATHS[cable.id];
+    assert.equal(y, cable.top ? CABINET.y1 : CABINET.y0);
+    assert.equal(glands.has(x), false);
+    glands.add(x);
+    assert.deepEqual(outer, [x, y + face * GLAND_HALF_LENGTH, z]);
+    for (const core of cable.cores) {
+      const panelRoute = routeCore(cable, core.at);
+      const fieldRoute = routeFieldCore(cable, core.to);
+      assert.deepEqual(panelRoute[0], TERMINALS.get(core.at).pos);
+      assert.deepEqual(panelRoute.at(-1), [x, y - face * GLAND_HALF_LENGTH, z]);
+      assert.deepEqual(fieldRoute[0], jacket.at(-1));
+      assert.deepEqual(fieldRoute.at(-1), TERMINALS.get(core.to).pos);
+      assert.equal(TERMINALS.get(core.to).field, true);
+      assert.equal(fieldPins.has(core.to), false);
+      fieldPins.add(core.to);
+      const row = rows.get(`${cable.id}.${core.core}`);
+      assert.deepEqual([row.from, row.to], [core.at, core.to]);
+    }
+  }
+  assert.deepEqual(CABLES.find(c => c.id === 'W0').cores.map(core => core.net), ['L', 'N', 'PE']);
 });

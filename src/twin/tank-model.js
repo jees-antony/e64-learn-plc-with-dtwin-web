@@ -40,6 +40,7 @@ export const DEVICES = [
   { id: 'A1', kind: 'plc', name: 'PLC CPU (DI 24 V DC / DQ 24 V DC)', text: 'A1  PLC_1', pos: [1.5, RAIL1], size: [0.34, 0.16, 0.08] },
   { id: 'K1', kind: 'relay', name: 'Interface relay 24 V DC: switches the fill valve', text: 'K1', pos: [1.02, RAIL2], size: [0.036, 0.09, 0.07] },
   { id: 'K2', kind: 'relay', name: 'Interface relay 24 V DC: switches the drain valve', text: 'K2', pos: [1.07, RAIL2], size: [0.036, 0.09, 0.07] },
+  { id: 'PE1', kind: 'earth', name: 'Protective earth bond to the cabinet', text: 'PE1', pos: [0.99, 1.69], size: [0.034, 0.04, 0.032] },
   // X1 terminals are generated below
   // plant
   { id: 'S1', kind: 'button', name: 'Push button FILL (green, NO contact 13-14)', text: 'S1 FILL', plant: true },
@@ -51,6 +52,7 @@ export const DEVICES = [
 ]
 export const X1 = { x0: 1.2, pitch: 0.024, y: RAIL2, size: [0.02, 0.07, 0.06], count: 12 }
 export const OPERATOR_STATION = { pos: [0.35, 1.15, 0.55] }
+export const SUPPLY = { pos: [1.03, 2.28, -0.08], size: [0.12, 0.07, 0.065] }
 
 /* ------------------------------------------------------------ terminals -- */
 // Each terminal: id 'DEV:name', position [x, y, z] and the side its wire leaves from ('top' | 'bottom').
@@ -70,10 +72,34 @@ deviceTerminals(dev('G1'), ['+', '+2', '-', '-2'], ['L', 'N'])   // two + and tw
 deviceTerminals(dev('A1'), ['L+', 'M', '1M', 'DI0', 'DI1', 'DI2', 'DI3', null], ['3L+', '3M', 'DQ0', 'DQ1', null, null])
 deviceTerminals(dev('K1'), ['A1', 'A2'], ['11', '14'])
 deviceTerminals(dev('K2'), ['A1', 'A2'], ['11', '14'])
+deviceTerminals(dev('PE1'), ['PE'], [])
 for (let i = 1; i <= X1.count; i++) {
   const x = X1.x0 + (i - 1) * X1.pitch, z = PLATE_Z + X1.size[2] * 0.6
   T.set(`X1:${i}`, { id: `X1:${i}`, device: 'X1', name: String(i), pos: [x, X1.y + X1.size[1] / 2, z], side: 'top' })
   T.set(`X1:${i}f`, { id: `X1:${i}f`, device: 'X1', name: `${i} (field)`, pos: [x, X1.y - X1.size[1] / 2, z], side: 'bottom' })
+}
+function fieldTerminal(device, name, pos) {
+  const id = `${device}:${name}`
+  T.set(id, { id, device, name, pos, field: true })
+}
+const [ox, oy, oz] = OPERATOR_STATION.pos
+for (const [id, x] of [['S1', ox - 0.065], ['S2', ox + 0.065]]) {
+  fieldTerminal(id, '13', [x - 0.012, oy - 0.085, oz + 0.039])
+  fieldTerminal(id, '14', [x + 0.012, oy - 0.085, oz + 0.039])
+}
+for (const id of ['B1', 'B2']) {
+  const { pos: [x, y, z], angle } = dev(id)
+  for (const [name, dx] of [['1', -0.012], ['2', 0.012]]) {
+    fieldTerminal(id, name, [x + dx * Math.cos(angle) + 0.016 * Math.sin(angle), y - 0.03, z - dx * Math.sin(angle) + 0.016 * Math.cos(angle)])
+  }
+}
+for (const id of ['Y1', 'Y2']) {
+  const [x, y, z] = dev(id).pos
+  fieldTerminal(id, '+', [x - 0.014, y + 0.0725, z + 0.052])
+  fieldTerminal(id, '-', [x + 0.014, y + 0.0725, z + 0.052])
+}
+for (const [name, dx] of [['L', -0.034], ['N', 0], ['PE', 0.034]]) {
+  fieldTerminal('Supply', name, [SUPPLY.pos[0] + dx, SUPPLY.pos[1] - SUPPLY.size[1] / 2, SUPPLY.pos[2]])
 }
 export const TERMINALS = T
 
@@ -82,6 +108,7 @@ export const TERMINALS = T
 export const NETS = {
   L: { name: 'L  230 V AC phase', color: '#7b4a21', live: 'power' },
   N: { name: 'N  neutral', color: '#59a7e0', live: 'never' },
+  PE: { name: 'PE  protective earth', color: '#7b9d27', live: 'never' },
   P24: { name: '+24 V DC', color: '#d42a2a', live: 'power' },
   M: { name: '0 V (M)', color: '#1d3f9e', live: 'never' },
   S1: { name: 'S1 → DI0 (FILL button)', color: '#e07b00', live: 'S1' },
@@ -116,7 +143,9 @@ export const WIRES = [
 
 // Field cables: cores land on the X1 field side; `to` names the device terminal at the far end.
 export const CABLES = [
-  { id: 'W0', name: 'Supply 3G1.5 (230 V AC in)', device: 'supply', cores: [{ core: 'BN', at: 'F1:1', to: 'L', net: 'L' }, { core: 'BU', at: 'F1:3', to: 'N', net: 'N' }], top: true },
+  { id: 'W0', name: 'Supply 3G1.5 (230 V AC in)', device: 'Supply', cores: [
+    { core: 'BN', at: 'F1:1', to: 'Supply:L', net: 'L' }, { core: 'BU', at: 'F1:3', to: 'Supply:N', net: 'N' },
+    { core: 'GNYE', at: 'PE1:PE', to: 'Supply:PE', net: 'PE' }], top: true },
   { id: 'W1', name: 'Operator station 4×0.75', device: 'S1', cores: [
     { core: '1', at: 'X1:1f', to: 'S1:13', net: 'P24' }, { core: '2', at: 'X1:2f', to: 'S1:14', net: 'S1' },
     { core: '3', at: 'X1:3f', to: 'S2:13', net: 'P24' }, { core: '4', at: 'X1:4f', to: 'S2:14', net: 'S2' }] },
@@ -125,7 +154,12 @@ export const CABLES = [
   { id: 'W4', name: 'Fill valve Y1 2×1.0', device: 'Y1', cores: [{ core: '1', at: 'X1:9f', to: 'Y1:+', net: 'K1' }, { core: '2', at: 'X1:10f', to: 'Y1:-', net: 'M' }] },
   { id: 'W5', name: 'Drain valve Y2 2×1.0', device: 'Y2', cores: [{ core: '1', at: 'X1:11f', to: 'Y2:+', net: 'K2' }, { core: '2', at: 'X1:12f', to: 'Y2:-', net: 'M' }] },
 ]
-export const GLAND = { bottom: [1.62, CABINET.y0 + 0.02, -0.08], top: [1.03, CABINET.y1 - 0.02, -0.08] }
+// Order the exits by the devices' leftward reach so the floor routes do not cross.
+const FIELD_ORDER = ['W1', 'W5', 'W3', 'W2', 'W4']
+export const CABLE_GLANDS = {
+  W0: [1.03, CABINET.y1, -0.08],
+  ...Object.fromEntries(FIELD_ORDER.map((id, i) => [id, [1.25 + i * 0.085, CABINET.y0, 0.142]])),
+}
 
 /* ------------------------------------------------------------- routing -- */
 // Wires run from a terminal straight up/down into the nearest wiring duct, along it, through a vertical
@@ -149,25 +183,43 @@ export function routeWire(a, b, lane = 0) {
   return pts
 }
 /** Inside the panel: field core from the X1 field side (or F1 top) to the cable gland. */
-export function routeCore(at, top, lane = 0) {
+export const GLAND_HALF_LENGTH = 0.018
+function panelEnd(cable, outside) {
+  const [x, y, z] = CABLE_GLANDS[cable.id]
+  const sign = Boolean(cable.top) === outside ? 1 : -1
+  return [x, y + sign * GLAND_HALF_LENGTH, z]
+}
+export function routeCore(cable, at, lane = 0) {
   const t = T.get(at), z = PLATE_Z + 0.03 + (lane % 6) * 0.007
-  if (top) return [t.pos, [t.pos[0], DUCTS.top, z], [GLAND.top[0], DUCTS.top, z], GLAND.top]
-  return [t.pos, [t.pos[0], DUCTS.bottom, z], [GLAND.bottom[0], DUCTS.bottom, z], GLAND.bottom]
+  const end = panelEnd(cable, false), [x, , gz] = end
+  const y = cable.top ? DUCTS.top + (lane % 3) * 0.008 : DUCTS.bottom + (lane % 3) * 0.008
+  if (at === 'PE1:PE') return [t.pos, [t.pos[0], 1.74, t.pos[2]], [x, 1.74, gz], end]
+  return [t.pos, [t.pos[0], y, z], [x, y, z], [x, y, gz], end]
 }
-// Field cable sheaths outside the panel: from the gland along a floor lane to the device.
-const OP = OPERATOR_STATION.pos
-/** Level switch cable: along the floor lane, then up the tank wall just beside the switch. */
-function riser(xPanel, lane, at, dx) {
-  const [x, y, z] = onWall(1.0, TANK.bottom + TANK.height * at, 0.09)
-  return [GLAND.bottom, [xPanel, 0.03, 0.05], [xPanel, 0.03, lane], [x + dx, 0.03, lane], [x + dx, 0.03, z], [x + dx, y - 0.07, z]]
+// The field end of each sheath is the start of its exposed conductors.
+function breakout(id, offset) {
+  const [x, y, z] = dev(id).pos
+  return [x + offset[0], y + offset[1], z + offset[2]]
 }
-export const CABLE_PATHS = {
-  W0: [GLAND.top, [1.03, 2.3, -0.08], [1.03, 2.6, -0.08]],
-  W1: [GLAND.bottom, [1.62, 0.03, 0.05], [1.62, 0.03, 0.62], [OP[0], 0.03, 0.62], [OP[0], 0.03, OP[2] + 0.07], [OP[0], OP[1] - 0.12, OP[2] + 0.07]],
-  W2: riser(1.6, 0.82, TANK.lowAt, 0),
-  W3: riser(1.58, 0.86, TANK.highAt, 0.03),
-  W4: [GLAND.bottom, [1.64, 0.03, 0.05], [1.64, 0.03, 0.9], [-2.4, 0.03, 0.9], [-2.4, 0.03, 0.12], [-2.4, 2.14, 0.12]],
-  W5: [GLAND.bottom, [1.66, 0.03, 0.05], [1.66, 0.03, 0.74], [-0.78, 0.03, 0.74], [-0.78, 0.03, 0.12], [-0.78, 0.44, 0.12]],
+const CABLE_BREAKOUTS = {
+  W0: [SUPPLY.pos[0], SUPPLY.pos[1] - 0.10, SUPPLY.pos[2]],
+  W1: [ox, oy - 0.16, oz + 0.039],
+  W2: breakout('B1', [0.052, -0.092, 0.027]),
+  W3: breakout('B2', [0.088, -0.092, 0.057]),
+  W4: breakout('Y1', [0, 0.043, 0.115]),
+  W5: breakout('Y2', [0, 0.043, 0.115]),
+}
+const FLOOR_LANES = [0.62, 0.70, 0.78, 0.86, 0.94]
+export const CABLE_PATHS = Object.fromEntries(CABLES.map((c) => {
+  const start = panelEnd(c, true), end = CABLE_BREAKOUTS[c.id]
+  if (c.top) return [c.id, [start, end]]
+  const [x, , z] = start, [ex, , ez] = end, lane = FLOOR_LANES[FIELD_ORDER.indexOf(c.id)]
+  return [c.id, [start, [x, 0.03, z], [x, 0.03, lane], [ex, 0.03, lane], [ex, 0.03, ez], end]]
+}))
+export function routeFieldCore(cable, to) {
+  const start = CABLE_BREAKOUTS[cable.id], end = T.get(to).pos
+  const [x, y, z] = end, [, sy, sz] = start
+  return [start, [x, (sy + y) / 2, sz], [x, y - 0.013, z], end]
 }
 
 /* ------------------------------------------------------------- process -- */
@@ -221,6 +273,6 @@ export class TankProcess {
 /** Human-readable wiring list (panel wires and field cable cores). */
 export function wiringList() {
   const rows = WIRES.map((x) => ({ id: x.id, from: x.from, to: x.to, net: x.net, kind: 'panel' }))
-  for (const c of CABLES) for (const k of c.cores) rows.push({ id: `${c.id}.${k.core}`, from: k.at.replace(/f$/, ''), to: k.to, net: k.net, kind: c.id })
+  for (const c of CABLES) for (const k of c.cores) rows.push({ id: `${c.id}.${k.core}`, from: k.at, to: k.to, net: k.net, kind: c.id })
   return rows
 }

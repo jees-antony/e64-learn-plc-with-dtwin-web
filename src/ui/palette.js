@@ -10,7 +10,9 @@ const icons = {
   N: () => S(34, L(0, 11, 9, 11), svg('rect', { x: 9, y: 3, width: 16, height: 16, fill: 'none', stroke: '#222', 'stroke-width': 2 }), svg('text', { x: 17, y: 15, 'text-anchor': 'middle', 'font-size': 10, 'font-weight': 700 }, 'N'), L(25, 11, 34, 11)),
   coil: (t = '') => S(34, L(0, 11, 9, 11), svg('path', { d: 'M13 3 Q7 11 13 19 M21 3 Q27 11 21 19', fill: 'none', stroke: '#222', 'stroke-width': 2 }), svg('text', { x: 17, y: 15, 'text-anchor': 'middle', 'font-size': 10, 'font-weight': 700 }, t), L(25, 11, 34, 11)),
   box: (t) => S(34, svg('rect', { x: 3, y: 2, width: 28, height: 18, fill: '#fff', stroke: '#222', 'stroke-width': 2 }), svg('text', { x: 17, y: 15, 'text-anchor': 'middle', 'font-size': t.length > 3 ? 8 : 10, 'font-weight': 700 }, t)),
-  branch: () => S(34, L(2, 6, 32, 6), L(2, 17, 32, 17), L(2, 6, 2, 17), L(32, 6, 32, 17)),
+  // A rung (top) with a parallel path dropping down and rejoining. `hot` thickens the side the command is about.
+  branch: (hot = '') => { const w = (side) => (hot === side ? 3.5 : 2), c = (side) => (hot === side ? '#14845b' : '#222'), seg = (x1, y1, x2, y2, side) => svg('line', { x1, y1, x2, y2, stroke: c(side), 'stroke-width': w(side) })
+    return S(34, L(0, 5, 34, 5), seg(7, 5, 7, 16, 'open'), seg(7, 16, 27, 16), seg(27, 16, 27, 5, 'close'), hot === 'path' ? L(7, 11, 27, 11) : null) },
 }
 export { icons }
 
@@ -20,13 +22,14 @@ export const PALETTE = [
     { name: 'Normally open contact', short: 'Shift+F2', icon: 'NO', lad: { k: 'NO' }, fbd: { t: 'var' } },
     { name: 'Normally closed contact', short: 'Shift+F3', icon: 'NC', lad: { k: 'NC' }, fbd: { t: 'not' } },
     { name: 'Output coil', short: 'Shift+F7', icon: 'coil', lad: { coil: 'coil' } },
+    { name: 'Negated coil', icon: ['coil', '/'], lad: { coil: 'ncoil' } },
     { name: 'Set output', short: 'Shift+F4', icon: ['coil', 'S'], lad: { coil: 'set' }, fbd: { out: 'S' } },
     { name: 'Reset output', short: 'Shift+F6', icon: ['coil', 'R'], lad: { coil: 'reset' }, fbd: { out: 'R' } },
     { name: 'Positive edge', icon: 'P', lad: { k: 'P' } },
     { name: 'Negative edge', icon: 'N', lad: { k: 'N' } },
-    { name: 'Start branch', short: 'Shift+F8', icon: 'branch', lad: { k: 'branch' } },
-    { name: 'Close branch', short: 'Shift+F9', icon: 'branch', lad: { k: 'closeBranch' } },
-    { name: 'Add parallel path', icon: 'branch', lad: { k: 'addPath' } },
+    { name: 'Start branch', short: 'Shift+F8', icon: ['branch', 'open'], lad: { k: 'branch' } },
+    { name: 'Close branch', short: 'Shift+F9', icon: ['branch', 'close'], lad: { k: 'closeBranch' } },
+    { name: 'Add parallel path', icon: ['branch', 'path'], lad: { k: 'addPath' } },
     { name: 'AND', icon: ['box', '&'], fbd: { t: 'and' } },
     { name: 'OR', icon: ['box', '≥1'], fbd: { t: 'or' } },
     { name: 'XOR', icon: ['box', 'X'], fbd: { t: 'xor' } },
@@ -48,8 +51,15 @@ export const PALETTE = [
   { group: 'Comparator operations', items: ['==', '<>', '>', '>=', '<', '<='].map((op) => ({ name: `Compare  ${op}`, short: op === '==' ? 'Shift+F10' : '', icon: ['box', op], lad: { k: 'cmp', op }, fbd: { t: 'cmp', op } })) },
   { group: 'Move and math', items: [
     { name: 'MOVE', icon: ['box', 'MOVE'], lad: { k: 'move' } },
-    { name: 'ADD', icon: ['box', '+'], fbd: { t: 'add' } }, { name: 'SUB', icon: ['box', '−'], fbd: { t: 'sub' } },
-    { name: 'MUL', icon: ['box', '×'], fbd: { t: 'mul' } }, { name: 'DIV', icon: ['box', '÷'], fbd: { t: 'div' } },
+    { name: 'ADD', icon: ['box', '+'], lad: { k: 'math', op: 'add' }, fbd: { t: 'add' } }, { name: 'SUB', icon: ['box', '−'], lad: { k: 'math', op: 'sub' }, fbd: { t: 'sub' } },
+    { name: 'MUL', icon: ['box', '×'], lad: { k: 'math', op: 'mul' }, fbd: { t: 'mul' } }, { name: 'DIV', icon: ['box', '÷'], lad: { k: 'math', op: 'div' }, fbd: { t: 'div' } },
   ] },
 ]
 export function iconFor(item) { const i = item.icon; return Array.isArray(i) ? icons[i[0]](i[1]) : icons[i]() }
+
+/** Can this palette item be used in an editor of this language? Returns { ok, reason }. */
+export function availability(item, lang) {
+  if (lang === 'LAD') return item.lad ? { ok: true } : { ok: false, reason: 'Not available in ladder (LAD) — use this in a function block diagram (FBD) block' }
+  if (lang === 'FBD') return item.fbd ? { ok: true } : { ok: false, reason: 'Not available in function block diagram (FBD) — use this in a ladder (LAD) block' }
+  return { ok: false, reason: 'Instructions are for ladder and FBD blocks. In SCL, type the code.' }
+}

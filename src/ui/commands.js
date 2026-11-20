@@ -14,7 +14,7 @@ function def(id, label, keys, src, run, opts = {}) { commands.set(id, { id, labe
 export function toast(text) {
   document.querySelector('.toast')?.remove()
   const t = document.createElement('div'); t.className = 'toast'; t.textContent = text
-  document.body.append(t); setTimeout(() => t.remove(), 2200)
+  document.body.append(t); setTimeout(() => t.remove(), Math.min(8000, 2500 + 45 * text.length))
 }
 const E = () => editor.api
 
@@ -93,6 +93,8 @@ export function installKeyboard() {
   addEventListener('keydown', (e) => {
     const k = keyString(e)
     if (!k) return
+    // The quick-insert menu and the tag bubble handle their own plain keys; only chords (Ctrl/Alt/F-keys) reach the commands.
+    if (e.target.closest?.('.quick-menu, .tag-bubble') && !(e.ctrlKey || e.metaKey || e.altKey || /^F\d/.test(e.key))) return
     const c = byKeys.get(k)
     if (!c) return
     const typing = inText(e.target)

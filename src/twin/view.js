@@ -59,11 +59,11 @@ export function mountTwin(root) {
     b.addEventListener('pointerdown', (e) => { e.preventDefault(); press(id, true); const up = () => { press(id, false); removeEventListener('pointerup', up) }; addEventListener('pointerup', up) })
     return b
   }
-  const legend = h('div', { class: 'legend' }, Object.entries({ L: 'L 230 V', N: 'N', P24: '+24 V', M: '0 V', S1: 'PLC input', DQ0: 'PLC output', K1: 'Valve 24 V' }).map(([k, t]) => h('span', null, h('i', { style: { background: NETS[k].color } }), t)))
+  const legend = h('div', { class: 'legend' }, Object.entries({ L: 'L 230 V', N: 'N', PE: 'Protective earth', P24: '+24 V', M: '0 V', S1: 'PLC input', DQ0: 'PLC output', K1: 'Valve 24 V' }).map(([k, t]) => h('span', null, h('i', { style: { background: NETS[k].color } }), t)))
   const wl = wiringList()
   const wiring = h('details', { class: 'tw-sec' }, h('summary', null, `Wiring list (${wl.length} wires and cores)`), h('table', { class: 'grid tw-wl' },
     h('thead', null, h('tr', null, ['Wire', 'From', 'To', 'Potential'].map((x) => h('th', null, x)))),
-    h('tbody', null, wl.map((r) => h('tr', { onClick: () => { scene.select(r.id); showInfo({ kind: 'wire', id: r.id, net: r.net, name: `${r.kind === 'panel' ? 'Wire' : r.kind + ' core'} ${r.id}: ${r.from} → ${r.to}` }); scene.view('panel') } },
+    h('tbody', null, wl.map((r) => h('tr', { onClick: () => { scene.select(r.id); showInfo({ kind: 'wire', id: r.id, net: r.net, name: `${r.kind === 'panel' ? 'Wire' : 'Core'} ${r.id}: ${r.from} → ${r.to}` }); scene.view(r.kind === 'panel' ? 'panel' : 'overview') } },
       h('td', { class: 'mono' }, r.id), h('td', { class: 'mono' }, r.from), h('td', { class: 'mono' }, r.to), h('td', null, h('i', { class: 'sw', style: { background: NETS[r.net].color } }), NETS[r.net].name))))))
   side.append(
     h('section', { class: 'tw-sec' }, h('h3', null, 'Process'),

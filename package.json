@@ -20,5 +20,8 @@
     "esbuild": "^0.25.12",
     "strucpp": "https://github.com/Autonomy-Logic/STruCpp/releases/download/v0.7.0/strucpp-0.7.0.tgz",
     "three": "^0.170.0"
+  },
+  "devDependencies": {
+    "jsdom": "^25.0.1"
   }
 }

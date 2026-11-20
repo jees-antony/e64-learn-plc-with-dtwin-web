@@ -3,7 +3,7 @@
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { CSS2DObject, CSS2DRenderer } from 'three/examples/jsm/renderers/CSS2DRenderer.js'
-import { CABINET, CABLE_PATHS, CABLES, DEVICES, DUCTS, GLAND, NETS, OPERATOR_STATION, PLATE_Z, TANK, TERMINALS, WIRES, X1, routeCore, routeWire } from './tank-model.js'
+import { CABINET, CABLE_GLANDS, CABLE_PATHS, CABLES, DEVICES, DUCTS, GLAND_HALF_LENGTH, NETS, OPERATOR_STATION, PLATE_Z, SUPPLY, TANK, TERMINALS, WIRES, X1, routeCore, routeFieldCore, routeWire } from './tank-model.js'
 
 const V = (p) => new THREE.Vector3(p[0], p[1], p[2])
 const std = (color, o = {}) => new THREE.MeshStandardMaterial({ color, roughness: 0.6, metalness: 0.05, ...o })
@@ -76,7 +76,7 @@ export function createScene(host, { onHover, onPick, onPress }) {
   floor.rotation.x = -Math.PI / 2; floor.receiveShadow = true; scene.add(floor)
   const grid = new THREE.GridHelper(14, 28, '#aeb8c0', '#bac3ca'); grid.position.y = 0.002; scene.add(grid)
 
-  const pickables = [], byId = new Map(), wireMeshes = new Map(), dyn = {}
+  const pickables = [], byId = new Map(), wireMaterials = new Map(), sheaths = new Map(), dyn = {}
   const add = (obj, parent = scene) => { parent.add(obj); return obj }
   const pick = (obj, info) => { obj.userData.pick = info; pickables.push(obj); if (info.kind === 'device') byId.set(info.id, obj); return obj }
   const steel = std('#9aa5ae', { metalness: 0.65, roughness: 0.35 })
@@ -174,7 +174,8 @@ export function createScene(host, { onHover, onPick, onPress }) {
   panel(cw, ch, 0.015, cmx, y0 + ch / 2, z0)
   panel(0.015, ch, z1 - z0, x0, y0 + ch / 2, (z0 + z1) / 2); panel(0.015, ch, z1 - z0, x1, y0 + ch / 2, (z0 + z1) / 2)
   panel(cw, 0.015, z1 - z0, cmx, y1, (z0 + z1) / 2); panel(cw, 0.015, z1 - z0, cmx, y0, (z0 + z1) / 2)
-  panel(cw, y0, z1 - z0, cmx, y0 / 2, (z0 + z1) / 2, std('#2f3439'))
+  const plinthFront = 0.075
+  panel(cw, y0, plinthFront - z0, cmx, y0 / 2, (z0 + plinthFront) / 2, std('#2f3439'))
   const door = new THREE.Group(); door.position.set(x1, y0 + ch / 2, z1); door.rotation.y = 1.95; cab.add(door)
   add(shadow(new THREE.Mesh(new THREE.BoxGeometry(cw, ch, 0.02), body)), door).position.set(-cw / 2, 0, 0)
   const pocket = add(new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.4, 0.02), std('#8d9399')), door); pocket.position.set(-cw / 2, -0.2, -0.02)
@@ -186,12 +187,21 @@ export function createScene(host, { onHover, onPick, onPress }) {
   const duct = std('#8f969c', { transparent: true, opacity: 0.35, depthWrite: false })
   for (const y of [DUCTS.top, DUCTS.mid, DUCTS.bottom]) panel(DUCTS.right - DUCTS.left + 0.05, 0.05, 0.06, (DUCTS.left + DUCTS.right) / 2, y, PLATE_Z + 0.03, duct)
   for (const x of [DUCTS.left, DUCTS.right]) panel(0.05, DUCTS.top - DUCTS.bottom - 0.05, 0.06, x, (DUCTS.top + DUCTS.bottom) / 2, PLATE_Z + 0.03, duct)
-  for (const g of [GLAND.bottom, GLAND.top]) add(new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.03, 16), std('#2c3135')), cab).position.set(...g)
+  for (const c of CABLES) {
+    const gland = new THREE.Mesh(new THREE.CylinderGeometry(0.022, 0.022, GLAND_HALF_LENGTH * 2, 16), std('#262b30'))
+    pick(add(gland, cab), { kind: 'cable', id: c.id, name: `Cable ${c.id}: ${c.name}` }).position.set(...CABLE_GLANDS[c.id])
+  }
+  const source = add(new THREE.Mesh(new THREE.BoxGeometry(...SUPPLY.size), std('#41474b')))
+  pick(source, { kind: 'device', id: 'Supply', name: '230 V AC supply connector (L, N, PE)' }).position.set(...SUPPLY.pos)
+  const sourceLabel = label('230 V AC supply', 'small')
+  sourceLabel.position.set(SUPPLY.pos[0], SUPPLY.pos[1] + 0.06, SUPPLY.pos[2]); scene.add(sourceLabel)
 
   // components
   const comp = (d, color) => { const m = pick(add(shadow(new THREE.Mesh(new THREE.BoxGeometry(...d.size), std(color))), cab), { kind: 'device', id: d.id, name: d.name }); m.position.set(d.pos[0], d.pos[1], PLATE_Z + d.size[2] / 2); return m }
   const front = (d, text, opts, w = d.size[0] * 0.9, h = d.size[1] * 0.35, dy = 0) => { const p = plate(text, w, h, opts); p.position.set(d.pos[0], d.pos[1] + dy, PLATE_Z + d.size[2] + 0.0008); cab.add(p) }
   const dev = (id) => DEVICES.find((x) => x.id === id)
+  comp(dev('PE1'), '#698a24')
+  front(dev('PE1'), 'PE', { fg: '#fff' }, 0.024, 0.013)
   comp(dev('F1'), '#eceff1'); front(dev('F1'), 'F1 C6', { fg: '#222' }, 0.045, 0.02, 0.03)
   add(new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.02, 0.02), std('#2d6fc2')), cab).position.set(dev('F1').pos[0], dev('F1').pos[1] - 0.005, PLATE_Z + 0.08)
   comp(dev('G1'), '#b9c0c6'); front(dev('G1'), 'G1\n24 V DC', { fg: '#1b2a41' }, 0.1, 0.06, 0.02)
@@ -224,18 +234,27 @@ export function createScene(host, { onHover, onPick, onPress }) {
   /* --------------------------------------------------------------- wires -- */
   const wireMat = (net) => std(NETS[net].color, { roughness: 0.45, emissive: '#000000' })
   WIRES.forEach((w, i) => {
-    const m = pick(add(tube(routeWire(w.from, w.to, i), 0.0024, wireMat(w.net), 0.012), cab), { kind: 'wire', id: w.id, name: `Wire ${w.id}: ${w.from} → ${w.to}`, net: w.net })
-    wireMeshes.set(w.id, { mesh: m, net: w.net })
+    const material = wireMat(w.net)
+    pick(add(tube(routeWire(w.from, w.to, i), 0.0024, material, 0.012), cab), { kind: 'wire', id: w.id, name: `Wire ${w.id}: ${w.from} → ${w.to}`, net: w.net })
+    wireMaterials.set(w.id, { material, net: w.net })
   })
   let lane = 0
   for (const c of CABLES) {
     c.cores.forEach((k) => {
-      const m = pick(add(tube(routeCore(k.at, c.top, lane++), 0.0022, wireMat(k.net), 0.012), cab), { kind: 'wire', id: `${c.id}.${k.core}`, name: `${c.id} core ${k.core}: ${k.at.replace(/f$/, '')} → ${k.to}`, net: k.net })
-      wireMeshes.set(`${c.id}.${k.core}`, { mesh: m, net: k.net })
+      const id = `${c.id}.${k.core}`, material = wireMat(k.net)
+      const info = { kind: 'wire', id, name: `${c.id} core ${k.core}: ${k.at} → ${k.to}`, net: k.net }
+      pick(add(tube(routeCore(c, k.at, lane++), 0.0026, material, 0.012), cab), info)
+      pick(add(tube(routeFieldCore(c, k.to), 0.003, material, 0.008)), info)
+      wireMaterials.set(id, { material, net: k.net, cable: c.id })
     })
-    pick(add(shadow(tube(CABLE_PATHS[c.id], c.top ? 0.011 : 0.009, std(c.top ? '#5a6066' : '#3c4248', { roughness: 0.7 }), 0.06))), { kind: 'cable', id: c.id, name: `Cable ${c.id}: ${c.name}` })
+    const color = c.top ? '#5a6066' : '#3c4248', material = std(color, { roughness: 0.7 })
+    pick(add(shadow(tube(CABLE_PATHS[c.id], c.top ? 0.011 : 0.009, material, 0.035))), { kind: 'cable', id: c.id, name: `Cable ${c.id}: ${c.name}` })
+    sheaths.set(c.id, { material, color })
   }
-  for (const t of TERMINALS.values()) if (t.device !== 'X1') add(new THREE.Mesh(new THREE.CylinderGeometry(0.0035, 0.0035, 0.004, 8), steel), cab).position.set(...t.pos)
+  for (const t of TERMINALS.values()) {
+    const radius = t.field ? 0.0045 : 0.0035
+    add(new THREE.Mesh(new THREE.CylinderGeometry(radius, radius, 0.006, 10), steel)).position.set(...t.pos)
+  }
 
   /* ------------------------------------------------------ interaction -- */
   const ray = new THREE.Raycaster(), mouse = new THREE.Vector2()
@@ -264,11 +283,16 @@ export function createScene(host, { onHover, onPick, onPress }) {
     if (downAt && Math.hypot(e.clientX - downAt[0], e.clientY - downAt[1]) > 4) return
     const o = hit(e); const p = o?.userData.pick ?? null
     if (p?.kind === 'button') return
-    select(p?.kind === 'wire' ? p.id : null); onPick?.(p)
+    select(p?.kind === 'wire' || p?.kind === 'cable' ? p.id : null); onPick?.(p)
   })
   function select(id) {
     selected = id
-    for (const [wid, { mesh }] of wireMeshes) { mesh.material.transparent = !!id && wid !== id; mesh.material.opacity = id && wid !== id ? 0.18 : 1; mesh.scale.setScalar(1) }
+    for (const [wid, { material, cable }] of wireMaterials) {
+      const faded = !!id && id !== wid && id !== cable
+      material.transparent = faded; material.opacity = faded ? 0.18 : 1
+    }
+    const selectedCable = wireMaterials.get(id)?.cable ?? id
+    for (const [cid, { material, color }] of sheaths) material.color.set(cid === selectedCable ? '#dcac43' : color)
   }
 
   /* -------------------------------------------------------------- views -- */
@@ -305,7 +329,7 @@ export function createScene(host, { onHover, onPick, onPress }) {
     ;['%I0.0', '%I0.1', '%I0.2', '%I0.3'].forEach((a, i) => setLed(dyn.plcLed[`DI${i}`], inp[a], '#3ad15a'))
     setLed(dyn.plcLed.DQ0, plant.netLive('DQ0'), '#3ad15a'); setLed(dyn.plcLed.DQ1, plant.netLive('DQ1'), '#3ad15a')
     for (const [id, b] of Object.entries(dyn.buttons)) b.cap.position.z = b.z - (plant.buttons[id] ? 0.008 : 0)
-    for (const { mesh, net } of wireMeshes.values()) { const on = plant.netLive(net); mesh.material.emissive.set(on ? NETS[net].color : '#000000'); mesh.material.emissiveIntensity = on ? 0.9 : 0 }
+    for (const { material, net } of wireMaterials.values()) { const on = plant.netLive(net); material.emissive.set(on ? NETS[net].color : '#000000'); material.emissiveIntensity = on ? 0.9 : 0 }
   }
   function frame(t) {
     raf = active ? requestAnimationFrame(frame) : 0
@@ -316,7 +340,8 @@ export function createScene(host, { onHover, onPick, onPress }) {
       camera.position.lerpVectors(tween.p0, tween.p1, e); controls.target.lerpVectors(tween.q0, tween.q1, e)
       if (k >= 1) tween = null
     }
-    if (selected && wireMeshes.get(selected)) { const m = wireMeshes.get(selected).mesh; m.material.emissive.set('#ffd400'); m.material.emissiveIntensity = 0.6 + 0.4 * Math.sin(t / 180) }
+    const trace = wireMaterials.get(selected)
+    if (trace) { trace.material.emissive.set('#ffd400'); trace.material.emissiveIntensity = 0.6 + 0.4 * Math.sin(t / 180) }
     controls.update()
     renderer.render(scene, camera); labels.render(scene, camera)
   }

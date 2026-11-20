@@ -9,6 +9,7 @@ import { validateLadderNetwork } from './ladder-edit.js'
 
 const LITERAL = /^(?:[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?|T#[0-9a-zA-Z_.]+|TRUE|FALSE|16#[0-9A-Fa-f]+|'[^']*')$/i
 const WORD = /[A-Za-z_][A-Za-z0-9_]*/g
+const NUMERIC = new Set(['SINT', 'INT', 'DINT', 'USINT', 'UINT', 'UDINT', 'REAL', 'LREAL', 'BYTE', 'WORD', 'DWORD'])
 
 class Out {
   constructor() { this.lines = []; this.info = [] }
@@ -41,7 +42,8 @@ function operand(text, scope, err) {
   if (LITERAL.test(t)) return t
   const dotted = /^([A-Za-z_]\w*)\.([A-Za-z_]\w*)$/.exec(t)
   if (dotted && scope.instances?.has(dotted[1])) return t
-  if (!scope.local.has(t) && !scope.tags.has(t)) err(`Tag "${t}" is not defined`)
+  if (dotted) err(`Tag "${t}" is not defined: this block has no timer or counter named "${dotted[1]}"`)
+  else if (!scope.local.has(t) && !scope.tags.has(t)) err(`Tag "${t}" is not defined`)
   return t
 }
 
@@ -81,6 +83,18 @@ function ladNetwork(net, scope, ctx, err) {
         }
         case 'move': {
           body.push(`IF ${flow} THEN ${operand(e.dest, scope, err)} := ${operand(e.src, scope, err)}; END_IF;`)
+          break
+        }
+        case 'math': {
+          const a = operand(e.a, scope, err), b = operand(e.b, scope, err)
+          if (!['add', 'sub', 'mul', 'div'].includes(e.op)) { err(`Unknown math operation ${e.op}`); break }
+          if (e.op === 'div' && /^[-+]?0+(?:\.0*)?$/.test(String(e.b ?? '').trim())) err('Division by zero: the divisor is 0')
+          const d = String(e.dest ?? '').trim()
+          if (d === '') { err('Operand is missing: choose a tag to store the result in'); break }
+          if (LITERAL.test(d) || /\./.test(d)) { err(`The result must be stored in a tag, not in "${d}"`); break }
+          const dest = operand(d, scope, err), ty = typeOfName(scope, d)
+          if (ty && !NUMERIC.has(ty)) err(`"${d}" is ${ty}; the result of a calculation needs a number tag (Int, DInt, Real ...)`)
+          body.push(`IF ${flow} THEN ${dest} := ${a} ${MATH[e.op]} ${b}; END_IF;`)
           break
         }
         case 'box': {
@@ -170,6 +184,13 @@ export function validateTags(project) {
   return errors
 }
 
+/** Instances a LAD/FBD block declares, found before generation so pins like T1.Q resolve from any network. */
+function instancesOf(b, scope) {
+  const ctx = { instances: new Map(), auto: 0 }
+  for (const net of b.networks ?? []) (b.lang === 'FBD' ? fbdNetwork : ladNetwork)(net, scope, ctx, () => {})
+  return ctx.instances
+}
+
 export function generate(project) {
   const out = new Out()
   const errors = [...validateTags(project), ...validateInterfaces(project)]
@@ -177,7 +198,7 @@ export function generate(project) {
   const blockText = (b) => {
     const scope = scopeOf(project, b)
     const ctx = { instances: new Map(), auto: 0 }
-    scope.instances = ctx.instances
+    scope.instances = b.lang === 'SCL' ? ctx.instances : instancesOf(b, scope)
     const body = new Out()
     if (b.lang === 'SCL') {
       body.add(b.code ?? '', { block: b.id, scl: true })

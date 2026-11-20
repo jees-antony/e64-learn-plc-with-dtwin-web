@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { sampleProject, newBlock } from '../src/core/model.js'
 import { availableTypes, checkType, validateInterfaces } from '../src/core/types.js'
-import { startBranch, closeBranch, addParallelPath, insertAtGap, removeBranch, validateLadderNetwork } from '../src/core/ladder-edit.js'
+import { startBranch, closeBranch, canDropBranchEnd, addParallelPath, insertAtGap, removeBranch, validateLadderNetwork } from '../src/core/ladder-edit.js'
 import { compileProject } from '../src/core/engine.js'
 
 const libraries = ['iec-std-functions', 'iec-standard-fb'].map(n => JSON.parse(readFileSync(new URL(`../node_modules/strucpp/libs/${n}.stlib`, import.meta.url))))
@@ -103,9 +103,14 @@ test('Empty paths and crossing/backward joins are rejected without changing the 
   const before = JSON.stringify(n)
   assert.throws(() => closeBranch(n, { path: [], index: 0 }), /after the branch start/)
   assert.throws(() => closeBranch(n, { path: [], index: 3 }), /empty/)
+  assert.equal(canDropBranchEnd(n, [1], { path: [], index: 3 }), false)
   assert.equal(JSON.stringify(n), before)
   assert.throws(() => startBranch(n, { path: [], index: 0 }), /unfinished branch/)
   insertAtGap(n, { path: [1, 1], index: 0 }, contact('E'))
+  assert.equal(canDropBranchEnd(n, [1], { path: [], index: 1 }), false)
+  assert.equal(canDropBranchEnd(n, [1], { path: [], index: 2 }), false)
+  assert.equal(canDropBranchEnd(n, [1], { path: [1, 0], index: 0 }), false)
+  assert.equal(canDropBranchEnd(n, [1], { path: [], index: 3 }), true)
   assert.throws(() => closeBranch(n, { path: [1, 0], index: 0 }), /empty/)
 })
 test('An extra parallel path requires instructions and an explicit close', () => {

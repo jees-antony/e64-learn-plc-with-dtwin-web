@@ -1,23 +1,41 @@
 // Right-hand task cards: Instructions, Online tools (CPU panel) and Simulation (I/O).
-import { editor } from './commands.js'
+import { editor, toast } from './commands.js'
 import { h } from './dom.js'
 import { download, goOffline, goOnline, isOnline, runCpu, startSimulation, stopCpu, writeTag, readOperand } from './online.js'
-import { iconFor, PALETTE } from './palette.js'
+import { availability, iconFor, PALETTE } from './palette.js'
 import { press, twinInput } from '../twin/link.js'
-import { emit, on, state } from './store.js'
+import { blockById, emit, on, state } from './store.js'
+
+/** Language of the open editor: 'LAD' | 'FBD' | 'SCL', or null for tables and other tabs. */
+const activeLang = () => { const k = state.active ?? ''; return k.startsWith('block:') ? blockById(k.slice(6))?.lang ?? null : null }
 
 export function instructionsCard() {
   const el = h('div', null)
-  PALETTE.forEach((g, gi) => {
+  const note = h('div', { class: 'insert-hint' }, 'Instructions are for ladder and FBD blocks. In SCL, type the code.')
+  const rows = []
+  const groups = PALETTE.map((g, gi) => {
     const d = h('details', { class: 'pal-group', open: gi < 2 }, h('summary', null, g.group))
     for (const it of g.items) {
-      const item = h('div', { class: 'pal-item', draggable: 'true', title: `${it.name}${it.short ? ` (${it.short})` : ''}\nDrag onto a network, or double-click to insert at the selection.` }, iconFor(it), h('span', null, it.name), it.short ? h('small', null, it.short) : null)
-      item.addEventListener('dragstart', (e) => { e.dataTransfer.setData('text/plain', JSON.stringify({ lad: it.lad, fbd: it.fbd })); e.dataTransfer.effectAllowed = 'copy' })
-      item.addEventListener('dblclick', () => editor.api?.drop?.({ lad: it.lad, fbd: it.fbd }))
-      d.append(item)
+      const item = h('div', { class: 'pal-item', draggable: 'true' }, iconFor(it), h('span', null, it.name), it.short ? h('small', null, it.short) : null)
+      item.addEventListener('dragstart', (e) => { if (item.classList.contains('na')) return e.preventDefault(); e.dataTransfer.setData('text/plain', JSON.stringify({ lad: it.lad, fbd: it.fbd })); e.dataTransfer.effectAllowed = 'copy' })
+      item.addEventListener('dblclick', () => { const a = availability(it, activeLang()); if (a.ok) editor.api?.drop?.({ lad: it.lad, fbd: it.fbd }); else toast(a.reason) })
+      rows.push([it, item]); d.append(item)
     }
-    el.append(d)
+    return d
   })
+  const refresh = () => {
+    const lang = activeLang()
+    note.hidden = lang === 'LAD' || lang === 'FBD'
+    for (const [it, item] of rows) {
+      const a = availability(it, lang)
+      item.classList.toggle('na', !a.ok)
+      item.draggable = a.ok
+      item.title = a.ok ? `${it.name}${it.short ? ` (${it.short})` : ''}\nDrag onto a network, or double-click to insert at the selection.` : a.reason
+    }
+  }
+  el.append(note, ...groups)
+  refresh()
+  on('tabs', refresh)
   return el
 }
 
