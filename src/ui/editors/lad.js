@@ -27,6 +27,7 @@ export function mountLadder(host, tab) {
   const block = () => blockById(blockId)
   let zoom = 1, pendingEdit = false
   let branchDrag = null
+  let moveDrag = null   // an existing instruction being dragged to a new position: { network, path }
   const root = h('div', { class: 'lad', tabindex: '-1' })
   host.append(favoritesBar(), h('div', { class: 'ed-body', style: { background: '#eef1f4' } }, root))
   const body = host.lastChild
@@ -218,8 +219,77 @@ export function mountLadder(host, tab) {
     if (p.k === 'math') return insert(`math:${p.op}`, at)
     insert(p.k, at)
   }
+  /* --------------------------------------------------- marquee multi-select -- */
+  // Drag a box over empty rung space to select several instructions, like TIA. Selection is kept as
+  // { network, paths:[key strings] }; copy / cut / delete and "branch around" all act on the whole group.
+  function startMarquee(ev, ni) {
+    const netEl = refs.nets.get(ni)?.el; if (!netEl) return
+    const sx = ev.clientX, sy = ev.clientY
+    const boxEl = h('div', { class: 'marquee' }); document.body.append(boxEl)
+    let moved = false, paths = []
+    const onMove = (e) => {
+      const x1 = Math.min(sx, e.clientX), y1 = Math.min(sy, e.clientY), x2 = Math.max(sx, e.clientX), y2 = Math.max(sy, e.clientY)
+      if (!moved && Math.hypot(e.clientX - sx, e.clientY - sy) > 4) moved = true
+      Object.assign(boxEl.style, { left: `${x1}px`, top: `${y1}px`, width: `${x2 - x1}px`, height: `${y2 - y1}px` })
+      paths = []
+      for (const nd of netEl.querySelectorAll('.el.sym-el')) {
+        const isCoil = nd.dataset.path.startsWith('c')
+        const r = nd.getBoundingClientRect(), hit = moved && !isCoil && r.left < x2 && r.right > x1 && r.top < y2 && r.bottom > y1
+        nd.classList.toggle('pre-sel', hit)
+        if (hit) paths.push(nd.dataset.path)
+      }
+    }
+    const onUp = () => {
+      removeEventListener('mousemove', onMove, true); removeEventListener('mouseup', onUp, true)
+      boxEl.remove(); netEl.querySelectorAll('.pre-sel').forEach((x) => x.classList.remove('pre-sel'))
+      if (!moved) return   // a plain click: the network selection set by the .net handler stands
+      if (paths.length > 1) setSel({ network: ni, paths })
+      else if (paths.length === 1) setSel({ network: ni, path: paths[0].split('.').map(Number) })
+      else setSel({ network: ni })
+    }
+    addEventListener('mousemove', onMove, true); addEventListener('mouseup', onUp, true)
+    ev.preventDefault()
+  }
+  /** Shift+click an instruction to add or remove it from the selection (TIA extends a selection this way). */
+  function toggleInSelection(ni, k) {
+    const cur = sel()
+    let paths = cur && cur.network === ni ? (cur.paths ? [...cur.paths] : (cur.path?.length % 2 ? [key(cur.path)] : [])) : []
+    const i = paths.indexOf(k)
+    if (i >= 0) paths.splice(i, 1); else paths.push(k)
+    if (paths.length > 1) setSel({ network: ni, paths })
+    else if (paths.length === 1) setSel({ network: ni, path: paths[0].split('.').map(Number) })
+    else setSel({ network: ni })
+  }
+  function removeMany(s) {
+    if (!block().networks[s.network]) return
+    edit((p) => {
+      const blk = p.blocks.find((x) => x.id === blockId), net = blk.networks[s.network]
+      for (const kk of s.paths) { try { const { list, index } = resolve(net, kk.split('.').map(Number)); if (list[index]) list[index].__del = true } catch { /* path gone */ } }
+      ;(function strip(l) { for (let i = l.length - 1; i >= 0; i--) { const e = l[i]; if (e.__del) { l.splice(i, 1); continue } if (e.branches) e.branches.forEach(strip) } })(net.elements)
+      tidyBranches(net.elements)
+      state.selection = { block: blockId, network: s.network }
+    })
+  }
+  /** Wrap a contiguous group of selected instructions in a new parallel branch (empty second path to fill in). */
+  function branchAround() {
+    const s = sel(); if (!s?.paths?.length) return
+    const arrs = s.paths.map((k) => k.split('.').map(Number)).sort((a, b) => a.at(-1) - b.at(-1))
+    const parent = arrs[0].slice(0, -1), idxs = arrs.map((a) => a.at(-1))
+    const sameParent = arrs.every((a) => key(a.slice(0, -1)) === key(parent))
+    const contiguous = idxs.every((v, i) => i === 0 || v === idxs[i - 1] + 1)
+    if (!sameParent || !contiguous) { toast('To branch around a group, select instructions that sit next to each other on the same line.'); return }
+    edit((p) => {
+      const blk = p.blocks.find((x) => x.id === blockId), net = blk.networks[s.network]
+      let list = net.elements; for (let kk = 0; kk < parent.length; kk += 2) list = list[parent[kk]].branches[parent[kk + 1]]
+      const seg = list.splice(idxs[0], idxs.length)
+      list.splice(idxs[0], 0, { k: 'branch', closed: true, branches: [seg, []] })
+      state.selection = { block: blockId, network: s.network, branch: [...parent, idxs[0]] }
+    })
+    toast('Branched around the selection. Add the alternative instructions to the empty parallel path.')
+  }
   function remove() {
     const s = sel(); if (!s) return
+    if (s.paths) { removeMany(s); return }
     if (s.gap) { toast('A wire is selected. Select the instruction or network you want to delete.'); return }
     if (s.branch) { insert('removeBranch'); return }
     if (!block().networks[s.network]) return
@@ -259,6 +329,12 @@ export function mountLadder(host, tab) {
   function copy() {
     const s = sel(); if (!s) return
     const net = block().networks[s.network]; if (!net) return
+    if (s.paths) {
+      const clones = []
+      for (const k of s.paths) { try { const { list, index } = resolve(net, k.split('.').map(Number)); if (list[index]) clones.push(clone(list[index])) } catch { /* gone */ } }
+      if (clones.length) state.clipboard = { kind: 'elements', data: clones }
+      return
+    }
     if (s.coil !== undefined && net.coils[s.coil]) { state.clipboard = { kind: 'coil', data: clone(net.coils[s.coil]) }; return }
     const at = s.branch ?? (s.path?.length % 2 ? s.path : null)
     if (at) { const { list, index } = resolve(net, at); if (list[index]) { state.clipboard = { kind: 'element', data: clone(list[index]) }; return } }
@@ -297,6 +373,16 @@ export function mountLadder(host, tab) {
       })
       return
     }
+    if (clip.kind === 'elements') {
+      const ni = Math.min(s?.network ?? blk0.networks.length - 1, blk0.networks.length - 1); if (ni < 0) return
+      edit((p) => {
+        const blk = p.blocks.find((x) => x.id === blockId), net = blk.networks[ni]
+        let gap = gapOf(net, s?.network === ni ? s : null), last = null
+        for (const d of clip.data) { const data = clone(d); renewInstances(blk, [data])([data]); last = insertAtGap(net, gap, data); gap = { path: gap.path, index: gap.index + 1 } }
+        if (last) state.selection = { block: blockId, network: ni, path: last }
+      })
+      return
+    }
     if (clip.kind !== 'network') return
     edit((p) => {
       const blk = p.blocks.find((x) => x.id === blockId), i = sel()?.network ?? blk.networks.length - 1
@@ -307,8 +393,26 @@ export function mountLadder(host, tab) {
       state.selection = { block: blockId, network: i + 1 }
     })
   }
+  /** Drag an existing instruction to a new wire within the same network. Insert a copy at the target, then
+   *  remove the original by identity (so index shifts and branch tidy-up cannot land it in the wrong place). */
+  function moveElement(from, gap) {
+    if (!block()) return
+    edit((p) => {
+      const blk = p.blocks.find((x) => x.id === blockId), net = blk.networks[from.network]; if (!net) return
+      const { list, index } = resolve(net, from.path), src = list[index]; if (!src) return
+      src.__moving = true
+      const data = clone(src); delete data.__moving; data.__moved = true
+      insertAtGap(net, clone(gap), data)
+      ;(function strip(l) { for (let i = l.length - 1; i >= 0; i--) { const e = l[i]; if (e.__moving) { l.splice(i, 1); continue } if (e.branches) e.branches.forEach(strip) } })(net.elements)
+      tidyBranches(net.elements)
+      let found = null
+      ;(function find(l, base) { l.forEach((e, i) => { if (e.__moved) { delete e.__moved; found = [...base, i] } if (e.branches) e.branches.forEach((bl, bi) => find(bl, [...base, i, bi])) }) })(net.elements, [])
+      state.selection = found ? { block: blockId, network: from.network, path: found } : { block: blockId, network: from.network }
+    })
+  }
   function move(dir) {
     const b = block(), s = sel(); if (!s) { if (b.networks.length) setSel({ network: 0 }); return }
+    if (s.paths) { setSel({ network: s.network, path: s.paths[0].split('.').map(Number) }); return }   // arrow keys collapse a multi-selection
     const nets = b.networks
     if (dir === 'up' || dir === 'down') { const n = s.network + (dir === 'down' ? 1 : -1); if (n >= 0 && n < nets.length) setSel({ network: n }); return }
     const net = nets[s.network], flat = []
@@ -355,13 +459,14 @@ export function mountLadder(host, tab) {
 
   /* the one floating text box used for operands and instance names */
   let activeInput = null
-  function openInput(span, { initial = '', placeholder = '', options = [], check, done }) {
+  function openInput(span, { initial = '', placeholder = '', options = [], check, done, selectAll = true }) {
     activeInput?.cancel()
     const r = span.getBoundingClientRect()
     const input = h('input', { class: 'op-edit', value: initial, placeholder, autocomplete: 'off', spellcheck: 'false', 'aria-label': placeholder, style: { left: `${r.left - 4}px`, top: `${r.top - 2}px`, width: `${Math.max(120, r.width + 12)}px` } })
+    if (!selectAll) input.dataset.typed = '1'   // seeded by type-to-edit: filter the tag list from the first keystroke
     const list = options.length ? opList(input, options, (v) => { input.value = v; finish(true, 'enter') }) : null
     document.body.append(input); if (list) document.body.append(list.el)
-    input.focus(); input.select(); list?.place()
+    input.focus(); if (selectAll) input.select(); else input.setSelectionRange(input.value.length, input.value.length); list?.place()
     let finished = false
     const close = () => { finished = true; input.remove(); list?.el.remove(); if (activeInput?.input === input) activeInput = null }
     const finish = (commit, how) => {
@@ -419,12 +524,13 @@ export function mountLadder(host, tab) {
     }, `op:${blockId}:${at.coil !== undefined ? `c${at.coil}` : key(at.path)}:${fieldName(f)}`)   // one undo step per operand
     return true
   }
-  function startEdit(at, name) {
+  function startEdit(at, name, seed) {
     const t = targetIn(state.project, at), f = t && operandFields(t).find((x) => fieldName(x) === name); if (!f) return
     setSel(at)
     const span = body.querySelector(`.el.sel [data-op="${name}"]`); if (!span) return
-    const initial = valueOf(t, f)
-    openInput(span, { initial, placeholder: placeholderFor(f), options: suggestionsFor(f), check: nameProblem, done: (v, how) => commitOperand(at, f, initial, v, how, span) })
+    const realInitial = valueOf(t, f)                       // the operand's current value, for change detection
+    const initial = seed != null ? seed : realInitial       // what the box shows: a typed character seeds a fresh entry
+    openInput(span, { initial, placeholder: placeholderFor(f), options: suggestionsFor(f), check: nameProblem, done: (v, how) => commitOperand(at, f, realInitial, v, how, span), selectAll: seed == null })
   }
   function commitOperand(at, f, initial, v, how, span) {
     const t = targetIn(state.project, at); if (!t) return
@@ -492,13 +598,26 @@ export function mountLadder(host, tab) {
   }
   const opSpan = (at, name, value, cls, fallback = '<??.?>') => {
     const unknown = classifyOperand(value, sc) === 'unknown'
-    return h('span', { class: `${cls}${value ? '' : ' empty'}${unknown ? ' unknown' : ''}`, dataset: { op: name }, title: unknown ? UNKNOWN_TIP : undefined, onDblclick: (ev) => { ev.stopPropagation(); startEdit(at, name) } }, value || fallback)
+    return h('span', { class: `${cls}${value ? '' : ' empty'}${unknown ? ' unknown' : ''}`, dataset: { op: name }, title: unknown ? UNKNOWN_TIP : undefined,
+      // An empty operand opens on a single click (TIA invites entry straight away); a filled one needs a double-click so it is not edited by accident.
+      onClick: (ev) => { if (!value && !ev.shiftKey) { ev.stopPropagation(); startEdit(at, name) } },
+      onDblclick: (ev) => { ev.stopPropagation(); startEdit(at, name) } }, value || fallback)
   }
   function elementNode(e, path, ni, ctx) {
     const k = key(path), at = { network: ni, path }, op = (name, value, cls, fallback) => opSpan(at, name, value, cls, fallback)
     const node = h('div', { class: 'el sym-el', dataset: { path: k }, style: { marginTop: '21px' } })
-    const onSel = (ev) => { ev.stopPropagation(); setSel({ network: ni, path }) }
+    const onSel = (ev) => { ev.stopPropagation(); if (ev.shiftKey) toggleInSelection(ni, k); else setSel({ network: ni, path }) }
     node.addEventListener('mousedown', onSel)
+    node.setAttribute('draggable', 'true')
+    node.addEventListener('dragstart', (ev) => {
+      ev.stopPropagation()
+      moveDrag = { network: ni, path }
+      setSel({ network: ni, path })
+      ev.dataTransfer.effectAllowed = 'move'
+      try { ev.dataTransfer.setData('application/x-plc-move', k) } catch { /* ignore */ }
+      node.classList.add('moving')
+    })
+    node.addEventListener('dragend', () => { node.classList.remove('moving'); moveDrag = null; clearDrag() })
     if (e.k === 'NO' || e.k === 'NC' || e.k === 'P' || e.k === 'N') {
       node.append(h('span', { class: 'val' }), op('tag', e.tag, 'tagname'), symbol(e, e.k), h('span', { class: 'addr' }, addrOf(e.tag)))
       node.title = e.k === 'NO' ? 'Normally open contact' : e.k === 'NC' ? 'Normally closed contact' : e.k === 'P' ? 'Positive signal edge' : 'Negative signal edge'
@@ -524,7 +643,7 @@ export function mountLadder(host, tab) {
       node.style.marginTop = '0'
     }
     ctx.els.set(k, node)
-    node.addEventListener('contextmenu', (ev) => { ev.preventDefault(); onSel(ev); menu(ev) })
+    node.addEventListener('contextmenu', (ev) => { ev.preventDefault(); ev.stopPropagation(); const cur = sel(); if (!(cur?.paths && cur.paths.includes(k))) setSel({ network: ni, path }); menu(ev) })
     return node
   }
   function wire(flowKey, ctx, grow = false, gap = null, empty = false) {
@@ -612,7 +731,7 @@ export function mountLadder(host, tab) {
   }
   function clearDrag() { setNear(null); root.classList.remove('dragging'); root.querySelectorAll('.out-col.drop-over').forEach((x) => x.classList.remove('drop-over')) }
   const onDragStart = (e) => { try { palDrag = e.target.closest?.('.pal-item, .fav') ?JSON.parse(e.dataTransfer.getData('text/plain')) : null } catch { palDrag = null } }
-  const onDragEnd = () => { palDrag = null; clearDrag() }
+  const onDragEnd = () => { palDrag = null; moveDrag = null; clearDrag() }
   function network(net, ni) {
     const ctx = { wires: [], els: new Map(), ni, net, join: openBranches(net).at(-1) }
     const body2 = h('div', { class: 'net-body' })
@@ -646,7 +765,8 @@ export function mountLadder(host, tab) {
         net.elements.length > 10 ? h('div', { class: 'rung-tip' }, 'Tip: long rungs are hard to read. Split the logic over two networks with a memory bit.') : null,
         open ? h('div', { class: 'branch-actions' }, h('span', null, 'This parallel path is not joined yet. Drag its end towards a green wire (it snaps to the nearest one), or click a green + and close it there.'), h('button', { type: 'button', class: 'btn', onMousedown: e => e.stopPropagation(), onClick: () => { if (sel()?.network !== ni) setSel({ network: ni }); insert('closeBranch') } }, 'Close the parallel path · Shift+F9')) : null])
     el.addEventListener('mousedown', () => setSel({ network: ni }))
-    el.addEventListener('contextmenu', (ev) => { ev.preventDefault(); if (sel()?.network !== ni) setSel({ network: ni }); menu(ev) })
+    body2.addEventListener('mousedown', (ev) => { if (ev.button === 0 && ev.target.closest('.net-body') === body2 && !ev.target.closest('.el, .wire-slot, .gap-plus, .branch, .branch-end, .lbar, input, select, button, textarea')) startMarquee(ev, ni) })
+    el.addEventListener('contextmenu', (ev) => { ev.preventDefault(); if (sel()?.network !== ni && !sel()?.paths) setSel({ network: ni }); menu(ev) })
     el.addEventListener('dragover', (ev) => {
       if (branchDrag) {
         // Snap to the nearest wire where the path may join, wherever the pointer is in this network.
@@ -655,6 +775,7 @@ export function mountLadder(host, tab) {
         if (slot) { slot.classList.add('join-near'); ev.preventDefault(); ev.dataTransfer.dropEffect = 'link' }
         return
       }
+      if (moveDrag && moveDrag.network !== ni) { ev.dataTransfer.dropEffect = 'none'; return }   // moves stay in one network
       ev.preventDefault()
       // A coil lands in the output column; everything else on the wire nearest the pointer.
       const coil = !!palDrag?.lad?.coil
@@ -672,6 +793,11 @@ export function mountLadder(host, tab) {
         if (slot) insert('closeBranch', { network: ni, gap: JSON.parse(slot.dataset.gap) })
         return
       }
+      if (moveDrag) {
+        const md = moveDrag; moveDrag = null
+        if (md.network === ni) { const slot = nearestSlot(el, ev); if (slot) moveElement(md, JSON.parse(slot.dataset.gap)) }
+        return
+      }
       try {
         const p = JSON.parse(ev.dataTransfer.getData('text/plain')); if (!p.lad) return
         const slot = nearestSlot(el, ev)
@@ -685,6 +811,14 @@ export function mountLadder(host, tab) {
   function menu(ev) {
     const s = sel(), ni = s?.network, st = block().networks[ni] ? railState(ni, s.gap) : { unfinished: false, canClose: false }, inBranch = !!containingBranch(s)
     const ins = (label, kind, keys) => ({ label, keys, run: () => insert(kind) })
+    if (s?.paths) {   // a multi-selection: offer only the group actions
+      contextMenu(ev.clientX, ev.clientY, [
+        { label: `Open parallel branch around selection (${s.paths.length})`, run: branchAround },
+        '-', { label: `Copy (${s.paths.length})`, keys: 'Ctrl+C', run: copy }, { label: `Cut (${s.paths.length})`, keys: 'Ctrl+X', run: cut },
+        '-', { label: `Delete (${s.paths.length})`, keys: 'Delete', run: remove },
+      ])
+      return
+    }
     const paths = [st.unfinished ? null : ins('Start a parallel path (OR)', 'branch', 'Shift+F8'), inBranch ? ins('Add another parallel path', 'addPath') : null, inBranch ? ins('Remove parallel path (keep the top path)', 'removeBranch') : null].filter(Boolean)
     contextMenu(ev.clientX, ev.clientY, [
       st.canClose ? ins('Close the parallel path here', 'closeBranch', 'Shift+F9') : null,
@@ -770,6 +904,7 @@ export function mountLadder(host, tab) {
     const s = sel(); if (!s) return
     const r = refs.nets.get(s.network); if (!r) return
     r.el.classList.add('sel')
+    if (s.paths) { for (const k of s.paths) r.ctx.els.get(k)?.classList.add('sel'); return }
     const el = s.coil !== undefined ? r.ctx.els.get(`c${s.coil}`) : s.path?.length % 2 ? r.ctx.els.get(key(s.path)) : null
     el?.classList.add('sel')
     if (s.gap) for (const wire of r.el.querySelectorAll('[data-gap]')) wire.classList.toggle('sel', wire.dataset.gap === JSON.stringify(s.gap))
@@ -785,7 +920,15 @@ export function mountLadder(host, tab) {
     on('tick', () => paint()),
     on('online', () => paint()),
   ]
-  editor.api = { drop: (pl) => pl.lad && dropPayload(pl.lad), insert, remove, insertNetwork, copy, paste, cut, edit: edit0, move, zoom: (d) => { zoom = Math.round(Math.max(0.6, Math.min(1.6, zoom + d)) * 10) / 10; root.style.zoom = zoom }, escape: () => { activeInput?.cancel(); closeBubble(); setSel(null) } }
+  // Type-to-edit (TIA): with an instruction selected, a printable key opens its first operand box seeded with that key.
+  function typeInto(ch) {
+    const s = sel(); if (!s || s.gap || s.branch || s.paths) return false
+    const t = targetIn(state.project, s); if (!t) return false
+    const f = operandFields(t)[0]; if (!f) return false
+    startEdit(atOf(s), fieldName(f), ch)
+    return !!activeInput
+  }
+  editor.api = { drop: (pl) => pl.lad && dropPayload(pl.lad), insert, remove, insertNetwork, copy, paste, cut, edit: edit0, move, type: typeInto, zoom: (d) => { zoom = Math.round(Math.max(0.6, Math.min(1.6, zoom + d)) * 10) / 10; root.style.zoom = zoom }, escape: () => { activeInput?.cancel(); closeBubble(); setSel(null) } }
   root.addEventListener('mousemove', (ev) => { lastMove = ev; if (!probeRaf) probeRaf = requestAnimationFrame(() => { probeRaf = 0; probe(lastMove) }) })
   root.addEventListener('mouseleave', () => setNear(null))
   host.addEventListener('dragover', (e) => e.preventDefault())

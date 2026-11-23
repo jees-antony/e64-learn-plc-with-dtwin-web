@@ -423,6 +423,19 @@ table.keys kbd { margin: 0; background: var(--head2); border: 1px solid var(--li
 .lad.dragging .wire-slot.near { border-top-color: #14845b; }
 .out-col.drop-over { outline-offset: -2px; }
 
+/* --- TIA interaction feel (Phase 1) --- */
+/* hover highlight on an instruction (outline only, so it never fights the online monitor fill) */
+.lad .el.sym-el { cursor: grab; }
+.lad .el.sym-el:hover:not(.sel) { outline: 1.5px solid var(--petrol); outline-offset: 1px; border-radius: 2px; }
+.lad .el.sym-el.moving { opacity: .4; cursor: grabbing; }
+/* while dragging an instruction or a palette item, show every valid insertion point faintly; the nearest stays prominent */
+.lad.dragging .wire-slot > .gap-plus { opacity: .55; transform: none; pointer-events: none; background: #e7f7ef; border-color: #14845b; color: #14845b; }
+.lad.dragging .wire-slot.near > .gap-plus { opacity: 1; }
+
+/* --- marquee multi-select (Phase 2) --- */
+.marquee { position: fixed; z-index: 9998; border: 1px solid #00848c; background: rgba(0, 132, 140, .12); pointer-events: none; }
+.lad .el.sym-el.pre-sel { outline: 1.5px dashed #00848c; outline-offset: 1px; border-radius: 2px; }
+
 /* ---- ladder favorites bar (TIA "Favorites" above the editor) ---- */
 .fav-bar { flex: none; display: flex; align-items: center; gap: 2px; padding: 2px 6px; background: var(--head2); border-bottom: 1px solid var(--line); }
 .fav-bar .grow { flex: 1; }

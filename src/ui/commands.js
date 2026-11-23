@@ -95,6 +95,11 @@ export function installKeyboard() {
     if (!k) return
     // The quick-insert menu and the tag bubble handle their own plain keys; only chords (Ctrl/Alt/F-keys) reach the commands.
     if (e.target.closest?.('.quick-menu, .tag-bubble') && !(e.ctrlKey || e.metaKey || e.altKey || /^F\d/.test(e.key))) return
+    // Type-to-edit (TIA): a printable key with an instruction selected opens its operand box seeded with that key.
+    if (e.key.length === 1 && e.key !== ' ' && !e.ctrlKey && !e.metaKey && !e.altKey && !inText(e.target)
+        && document.body.dataset.view !== 'twin' && !document.querySelector('dialog[open]')) {
+      if (E()?.type?.(e.key)) { e.preventDefault(); e.stopPropagation(); return }
+    }
     const c = byKeys.get(k)
     if (!c) return
     const typing = inText(e.target)
