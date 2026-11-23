@@ -10,19 +10,64 @@ import { blockById, emit, on, state } from './store.js'
 const activeLang = () => { const k = state.active ?? ''; return k.startsWith('block:') ? blockById(k.slice(6))?.lang ?? null : null }
 
 export function instructionsCard() {
-  const el = h('div', null)
+  const el = h('div', { class: 'ins-card' })
   const note = h('div', { class: 'insert-hint' }, 'Instructions are for ladder and FBD blocks. In SCL, type the code.')
-  const rows = []
-  const groups = PALETTE.map((g, gi) => {
-    const d = h('details', { class: 'pal-group', open: gi < 2 }, h('summary', null, g.group))
+  const rows = []   // [item, element] pairs whose availability is refreshed
+  let selected = null
+
+  // Shared wiring for tree rows and favorites buttons.
+  const wire = (it, node) => {
+    node.addEventListener('dragstart', (e) => { if (node.classList.contains('na')) return e.preventDefault(); e.dataTransfer.setData('text/plain', JSON.stringify({ lad: it.lad, fbd: it.fbd })); e.dataTransfer.effectAllowed = 'copy' })
+    node.addEventListener('dblclick', () => { const a = availability(it, activeLang()); if (a.ok) editor.api?.drop?.({ lad: it.lad, fbd: it.fbd }); else toast(a.reason) })
+    rows.push([it, node])
+  }
+  const twisty = (open) => h('span', { class: 'ins-tw' }, open ? '▼' : '▶')
+  const folderIcon = () => h('span', { class: 'ins-folder' })
+
+  // Collapsible pane with a grey header; returns { pane, body }.
+  const pane = (title, open, ...content) => {
+    const tw = twisty(open)
+    const body = h('div', { class: 'ins-pane-body' }, ...content)
+    body.hidden = !open
+    const head = h('div', { class: 'ins-pane-head', role: 'button', tabindex: '0' }, tw, h('span', null, title))
+    const toggle = () => { body.hidden = !body.hidden; tw.textContent = body.hidden ? '▶' : '▼' }
+    head.addEventListener('click', toggle)
+    head.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle() } })
+    return h('div', { class: 'ins-pane' }, head, body)
+  }
+
+  // Favorites
+  const favTia = ['-| |-', '-|/|-', '-( )-', '??', '-->', '<--']
+  const all = PALETTE.flatMap((g) => g.items)
+  const favs = h('div', { class: 'ins-favs' })
+  for (const t of favTia) {
+    const it = all.find((x) => x.tia === t); if (!it) continue
+    const b = h('div', { class: 'pal-item fav-btn', draggable: 'true' }, iconFor(it))
+    wire(it, b); favs.append(b)
+  }
+
+  // Basic instructions tree
+  const tree = h('div', { class: 'ins-tree' })
+  PALETTE.forEach((g, gi) => {
+    const open = gi < 2
+    const tw = twisty(open)
+    const kids = h('div', { class: 'ins-kids' })
+    kids.hidden = !open
+    const folder = h('div', { class: 'ins-row ins-folder-row' }, h('span', { class: 'ins-name' }, tw, folderIcon(), h('span', { class: 'ins-label' }, g.group)), h('span'), h('span'))
+    folder.addEventListener('click', () => { kids.hidden = !kids.hidden; tw.textContent = kids.hidden ? '▶' : '▼' })
     for (const it of g.items) {
-      const item = h('div', { class: 'pal-item', draggable: 'true' }, iconFor(it), h('span', null, it.name), it.short ? h('small', null, it.short) : null)
-      item.addEventListener('dragstart', (e) => { if (item.classList.contains('na')) return e.preventDefault(); e.dataTransfer.setData('text/plain', JSON.stringify({ lad: it.lad, fbd: it.fbd })); e.dataTransfer.effectAllowed = 'copy' })
-      item.addEventListener('dblclick', () => { const a = availability(it, activeLang()); if (a.ok) editor.api?.drop?.({ lad: it.lad, fbd: it.fbd }); else toast(a.reason) })
-      rows.push([it, item]); d.append(item)
+      const row = h('div', { class: 'pal-item ins-row ins-item', draggable: 'true' },
+        h('span', { class: 'ins-name' }, h('span', { class: 'ins-ico' }, iconFor(it)), h('span', { class: 'ins-label' }, it.tia)),
+        h('span', { class: 'ins-desc' }, it.name), h('span', { class: 'ins-ver' }, it.ver ?? ''))
+      row.addEventListener('click', () => { selected?.classList.remove('sel'); selected = row; row.classList.add('sel') })
+      wire(it, row); kids.append(row)
     }
-    return d
+    tree.append(folder, kids)
   })
+  const colHead = h('div', { class: 'ins-row ins-colhead' }, h('span', null, 'Name'), h('span', null, 'Description'), h('span', null, 'Version'))
+
+  const stub = (title) => pane(title, false, h('div', { class: 'ins-na' }, 'Not available in Web PLC Studio'))
+
   const refresh = () => {
     const lang = activeLang()
     note.hidden = lang === 'LAD' || lang === 'FBD'
@@ -30,10 +75,15 @@ export function instructionsCard() {
       const a = availability(it, lang)
       item.classList.toggle('na', !a.ok)
       item.draggable = a.ok
-      item.title = a.ok ? `${it.name}${it.short ? ` (${it.short})` : ''}\nDrag onto a network, or double-click to insert at the selection.` : a.reason
+      item.title = a.ok ? `${it.name}${it.short ? ` (${it.short})` : ''}\nDrag onto a network, or double-click to insert at the selected position.` : a.reason
     }
   }
-  el.append(note, ...groups)
+  el.append(
+    h('div', { class: 'ins-options' }, 'Options'),
+    note,
+    pane('Favorites', true, favs),
+    pane('Basic instructions', true, colHead, tree),
+    stub('Extended instructions'), stub('Technology'), stub('Communication'), stub('Optional packages'))
   refresh()
   on('tabs', refresh)
   return el

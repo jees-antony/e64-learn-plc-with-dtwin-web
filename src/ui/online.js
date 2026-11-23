@@ -97,10 +97,12 @@ export function readOperand(blockName, text) {
   if (!t) return undefined
   if (/^(TRUE|FALSE)$/i.test(t)) return /^TRUE$/i.test(t)
   if (/^[-+]?\d/.test(t)) return Number(t)
-  const parts = t.split('.')
+  const parts = t.replace(/^#/, '').replace(/"/g, '').split('.')
   const frame = m.frameOf(blockName)
   let v = frame?.[up(parts[0])]
   if (v === undefined) v = m.readGlobal(parts[0])
+  // An instance data block lives in the block that calls it: look through the running program instances.
+  if (v === undefined) for (const inst of m.instances?.values() ?? []) { const x = inst.frame?.[up(parts[0])]; if (x !== undefined) { v = x; break } }
   for (const p of parts.slice(1)) v = v?.[up(p)]
   return v
 }

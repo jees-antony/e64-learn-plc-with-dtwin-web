@@ -1,0 +1,35 @@
+/* Instructions task card (TIA-style panes + tree) */
+.ins-card { font-size: 12px; color: var(--text); user-select: none; }
+.ins-card [hidden] { display: none !important; }
+.ins-options { height: 20px; line-height: 20px; padding: 0 6px; background: var(--head2); border-bottom: 1px solid var(--line); color: var(--muted); font-size: 11px; }
+.ins-pane-head { display: flex; align-items: center; gap: 5px; height: 22px; padding: 0 6px; background: var(--head2); border-top: 1px solid var(--line2); border-bottom: 1px solid var(--line); font-weight: 600; font-size: 11.5px; cursor: pointer; }
+.ins-pane-head:hover { background: var(--hover); }
+.ins-pane-head:focus-visible { outline: 1px solid var(--sel-line); outline-offset: -1px; }
+.ins-tw { display: inline-block; width: 10px; font-size: 8px; color: var(--muted); text-align: center; flex: none; }
+.ins-pane-body { background: var(--white); }
+.ins-na { padding: 4px 8px 4px 22px; color: var(--faint); font-size: 11px; line-height: 20px; }
+
+.ins-favs { display: flex; flex-wrap: wrap; gap: 3px; padding: 4px 6px; }
+.ins-favs .fav-btn { display: flex; align-items: center; justify-content: center; width: 28px; height: 26px; border: 1px solid transparent; border-radius: 2px; cursor: grab; }
+.ins-favs .fav-btn:hover { background: var(--hover); border-color: var(--line); }
+.ins-favs .fav-btn svg { max-width: 22px; max-height: 20px; }
+
+.ins-row { display: grid; grid-template-columns: minmax(96px, 1.1fr) minmax(0, 2fr) 44px; align-items: center; height: 20px; padding: 0 6px; white-space: nowrap; }
+.ins-row > span { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.ins-colhead { height: 18px; background: var(--head2); border-bottom: 1px solid var(--line2); color: var(--muted); font-size: 11px; }
+.ins-colhead > span + span { border-left: 1px solid var(--line2); padding-left: 6px; }
+.ins-name { display: flex; align-items: center; gap: 4px; }
+.ins-folder-row { cursor: pointer; font-weight: 600; }
+.ins-folder-row:hover, .ins-item:hover { background: var(--hover); }
+.ins-item { cursor: grab; }
+.ins-item .ins-name { padding-left: 16px; }
+.ins-item.sel { background: var(--sel); box-shadow: inset 2px 0 0 var(--sel-line); }
+.ins-ico { display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 16px; flex: none; }
+.ins-ico svg { max-width: 20px; max-height: 16px; }
+.ins-label { overflow: hidden; text-overflow: ellipsis; }
+.ins-desc { color: var(--muted); padding-left: 6px; }
+.ins-ver { color: var(--faint); font-size: 11px; padding-left: 4px; }
+.ins-folder { position: relative; display: inline-block; width: 14px; height: 10px; flex: none; margin: 0 1px; background: var(--faint); border-radius: 1px 2px 2px 2px; }
+.ins-folder::before { content: ''; position: absolute; left: 0; top: -2px; width: 6px; height: 3px; background: var(--faint); border-radius: 1px 1px 0 0; }
+.ins-card .pal-item.na { opacity: .45; cursor: not-allowed; }
+.ins-card .pal-item.na:hover { background: transparent; }

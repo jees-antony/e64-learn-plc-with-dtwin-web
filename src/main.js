@@ -1,5 +1,8 @@
 import './styles.css'
 import './twin/twin.css'
+import './ui/cards.css'
+import './ui/tree.css'
+import './ui/dialogs.css'
 import { buildShell } from './ui/shell.js'
 import { buildRail } from './ui/rail.js'
 import * as store from './ui/store.js'

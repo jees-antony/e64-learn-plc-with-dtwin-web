@@ -78,3 +78,6 @@ export function closeTab(key) {
   emit('tabs')
 }
 export function select(sel) { state.selection = sel; emit('selection', sel) }
+
+/** What is being dragged from the project tree or details view ({ block } or { tag }), readable during dragover. */
+export const dragging = { payload: null }

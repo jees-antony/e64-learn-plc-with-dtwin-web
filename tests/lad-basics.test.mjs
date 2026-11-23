@@ -1,4 +1,4 @@
-import test from 'node:test';
+﻿import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { compileProject } from '../src/core/engine.js';
@@ -114,21 +114,21 @@ test('Math validation errors name the network', () => {
 test('Instructions availability follows the open editor', async () => {
   globalThis.Element ??= class {};
   const { availability, PALETTE } = await import('../src/ui/palette.js');
-  const item = n => PALETTE.flatMap(g => g.items).find(i => i.name === n);
-  assert.equal(availability(item('Output coil'), 'LAD').ok, true);
-  assert.equal(availability(item('AND'), 'FBD').ok, true);
-  const no = availability(item('AND'), 'LAD');
+  const item = n => PALETTE.flatMap(g => g.items).find(i => i.name === n || i.tia === n);
+  assert.equal(availability(item('Assignment'), 'LAD').ok, true);
+  assert.equal(availability(item('&'), 'FBD').ok, true);
+  const no = availability(item('&'), 'LAD');
   assert.equal(no.ok, false);
   assert.equal(no.reason, 'Not available in ladder (LAD) — use this in a function block diagram (FBD) block');
   assert.equal(availability(item('MOVE'), 'FBD').ok, false);
   assert.match(availability(item('MOVE'), 'FBD').reason, /ladder \(LAD\) block/);
-  for (const lang of ['SCL', null]) assert.equal(availability(item('Output coil'), lang).ok, false);
-  const neg = item('Negated coil');
+  for (const lang of ['SCL', null]) assert.equal(availability(item('Assignment'), lang).ok, false);
+  const neg = item('Negate assignment');
   assert.deepEqual(neg.lad, { coil: 'ncoil' });
   assert.equal(availability(neg, 'LAD').ok, true);
   // the six items that have no ladder form yet are exactly the ones dimmed in LAD
-  const dimmed = PALETTE.flatMap(g => g.items).filter(i => !availability(i, 'LAD').ok).map(i => i.name);
-  assert.deepEqual(dimmed, ['AND', 'OR', 'XOR', 'NOT', 'R_TRIG  Rising edge', 'F_TRIG  Falling edge']);
+  const dimmed = PALETTE.flatMap(g => g.items).filter(i => !availability(i, 'LAD').ok).map(i => i.tia);
+  assert.deepEqual(dimmed, ['R_TRIG', 'F_TRIG', '&', '>=1', 'X', 'NOT']);
 });
 
 test('A rung "contact -> ADD" counts as having an output and runs the math while powered', () => {

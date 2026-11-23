@@ -1,0 +1,47 @@
+/* Project tree, details view, DB icon and task-card tab strip. Original styling (layout vocabulary only). */
+
+/* ---- tree header strip ("Devices") ---- */
+.tree-tabs { flex: none; display: flex; align-items: stretch; height: 20px; background: var(--head2); border-bottom: 1px solid var(--line); padding-left: 4px; }
+.tree-tabs .tt { padding: 0 10px; display: flex; align-items: center; color: var(--muted); font-size: 11px; border-right: 1px solid var(--line2); }
+.tree-tabs .tt.on { background: var(--pane); color: var(--navy2); font-weight: 600; box-shadow: inset 0 -2px 0 var(--petrol); }
+
+/* ---- tree rows ---- */
+.tree { padding: 2px 0 6px; outline: none; font-size: 11.5px; }
+.tree .node { height: 20px; gap: 4px; }
+.tree .node .lbl { flex: 0 1 auto; min-width: 0; }
+.tree .node.na { color: var(--faint); cursor: default; }
+.tree .node.na:hover { background: transparent; }
+.tree .node.na.sel { background: var(--head2); box-shadow: none; }
+.tree .node.na .ic, .tree .node.na .ic-svg { opacity: .45; }
+.tree .node[draggable="true"] { cursor: grab; }
+.tree .node .tw { cursor: pointer; }
+.node .ic-svg { width: 15px; height: 15px; flex: none; display: grid; place-items: center; }
+.node .ic-svg svg, .dtable .ic-svg svg { width: 15px; height: 15px; }
+.dtable .ic-svg { display: inline-block; width: 13px; height: 13px; vertical-align: -2px; margin-right: 5px; }
+.dtable .ic-svg svg { width: 13px; height: 13px; }
+
+/* icons drawn for this app: block frames in kind colours */
+.bicon { fill: #fff; stroke-width: 2.4; stroke-linejoin: round; stroke-linecap: round; }
+.bicon text { font: 700 11px var(--mono); stroke: none; fill: currentColor; }
+.bicon.ob { stroke: #3b7bbf; color: #3b7bbf; } .bicon.fb { stroke: #7a5ab4; color: #7a5ab4; } .bicon.fc { stroke: #2e8f6e; color: #2e8f6e; }
+.bicon.db { stroke: #b87400; color: #b87400; }
+.ic.db { background: #d9951a; } .ic.na { background: #9aa5af; } .ic.add { background: var(--petrol); } .ic.diag { background: #5d7b99; }
+
+/* ---- details view ---- */
+#left .details { flex: 0 0 35%; min-height: 60px; max-height: 50%; display: flex; flex-direction: column; border-top: 1px solid var(--line); background: var(--pane); }
+#left .details.closed { flex: none; min-height: 0; }
+.det-head { flex: none; height: 22px; display: flex; align-items: center; gap: 6px; padding: 0 4px 0 8px; background: var(--head); border-bottom: 1px solid var(--line); font-weight: 600; color: var(--navy2); cursor: default; }
+.det-head .grow { flex: 1; }
+.det-toggle { border: 0; background: none; color: var(--muted); font-size: 9px; padding: 2px 6px; }
+.det-toggle:hover { color: var(--navy2); background: var(--hover); }
+.details.closed .det-body { display: none; }
+.det-body { flex: 1; min-height: 0; overflow: auto; background: var(--white); }
+.dtable { width: 100%; border-collapse: collapse; font-size: 11px; }
+.dtable th { position: sticky; top: 0; text-align: left; font-weight: 600; color: var(--muted); background: var(--head2); border-bottom: 1px solid var(--line); border-right: 1px solid var(--line2); padding: 1px 6px; white-space: nowrap; }
+.dtable td { padding: 1px 6px; height: 19px; border-bottom: 1px solid var(--line2); border-right: 1px solid var(--line2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 120px; }
+.dtable tbody tr:hover { background: var(--hover); }
+.dtable tr[draggable="true"] { cursor: grab; }
+
+/* ---- task-card tab strip ---- */
+#cardtabs .ctab.na, #cardtabs .ctab:disabled { color: var(--faint); opacity: .6; cursor: default; background: none; }
+#cardtabs .ctab.na:hover { background: none; }

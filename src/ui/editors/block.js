@@ -4,11 +4,12 @@ import { blockById, on } from '../store.js'
 import { mountFbd } from './fbd.js'
 import { mountLadder } from './lad.js'
 import { mountScl } from './scl.js'
-import { interfaceTable } from './tables.js'
+import { interfaceTable, mountDb } from './tables.js'
 
 export function mountBlock(host, tab) {
   const b = blockById(tab.id)
   if (!b) { host.append(h('div', { class: 'empty' }, 'Block not found')); return { dispose() {} } }
+  if (b.kind === 'DB') return mountDb(host, tab)
   const head = h('div', { class: 'ed-head' }, h('span', { class: 'title' }, `${b.name} [${b.kind}${b.number}]`), h('span', { class: 'tag-app' }, `${b.lang === 'LAD' ? 'Ladder' : b.lang === 'FBD' ? 'Function block diagram' : 'SCL'}`), h('span', { class: 'grow' }))
   const iface = interfaceTable(b.id)
   const content = h('div', { style: { flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' } })

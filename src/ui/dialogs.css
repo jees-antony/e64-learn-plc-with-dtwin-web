@@ -1,0 +1,28 @@
+/* Dialogs from block-dialogs.js: Add new block, Call options, Define tag, Rename tag. */
+.tia-dlg { max-width: 680px; }
+.tia-dlg .dbody { padding: 12px 14px; }
+.tia-dlg .dfoot { display: flex; align-items: center; gap: 8px; padding: 8px 14px; border-top: 1px solid var(--line); background: var(--pane); }
+.tia-dlg .dfoot .grow { flex: 1; }
+.tia-dlg .dcheck { display: inline-flex; align-items: center; gap: 4px; }
+.dsplit { display: grid; grid-template-columns: 150px 1fr; gap: 14px; min-height: 260px; }
+.dtiles { display: flex; flex-direction: column; gap: 6px; border-right: 1px solid var(--line); padding-right: 12px; }
+.dtile { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 8px 6px; border: 1px solid transparent; border-radius: 2px; background: none; font: inherit; cursor: pointer; color: var(--text); }
+.dtile:hover { background: var(--hover); }
+.dtile.on { background: var(--sel); border-color: var(--sel-line); font-weight: 600; }
+.dtile.na, .dtile:disabled { opacity: .45; cursor: not-allowed; }
+.dright { min-width: 0; }
+.dprops { grid-template-columns: 90px 1fr; max-width: none; padding: 0; }
+.dfield { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.dfield .in { flex: 1; min-width: 0; }
+.dnum { display: flex; align-items: center; gap: 10px; }
+.dnum label { display: inline-flex; align-items: center; gap: 3px; color: var(--text); }
+.devents { border: 1px solid var(--line); max-height: 120px; overflow: auto; flex: 1; background: #fff; }
+.devent { padding: 2px 6px; }
+.devent.on { background: var(--sel); }
+.devent.na { color: var(--faint); }
+.ddesc { margin: 12px 0 0; color: var(--muted); line-height: 1.5; }
+.derr { min-height: 16px; margin-top: 8px; color: var(--err); }
+.bicon rect, .bicon path { fill: #fff; stroke: #34495e; stroke-width: 1.6; }
+.bicon path { fill: none; }
+.bicon text { font: 700 9px var(--sans); fill: #34495e; }
+.bicon.ob rect { fill: #e3edf7; } .bicon.fb rect { fill: #ece6f6; } .bicon.fc rect { fill: #e2f2ec; } .bicon.db rect { fill: #fbf1df; }

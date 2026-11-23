@@ -62,7 +62,7 @@ svg { display: block; }
 .sep { width: 1px; height: 18px; background: var(--line); margin: 0 5px; }
 
 /* ---- main grid ---- */
-#main { display: grid; grid-template-columns: var(--left, 250px) 1fr var(--right, 250px); grid-template-rows: 1fr var(--bottom, 190px); min-height: 0; background: var(--line); gap: 1px; }
+#main { display: grid; grid-template-columns: var(--left, 250px) 1fr var(--right, 310px); grid-template-rows: 1fr var(--bottom, 190px); min-height: 0; background: var(--line); gap: 1px; }
 #main.no-left { --left: 0px; } #main.no-right { --right: 0px; } #main.no-bottom { --bottom: 0px; }
 .pane { background: var(--pane); min-height: 0; min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
 .pane-head { flex: none; height: 24px; display: flex; align-items: center; gap: 6px; padding: 0 8px; background: var(--head); border-bottom: 1px solid var(--line); font-weight: 600; text-transform: none; color: var(--navy2); }
@@ -447,3 +447,68 @@ table.keys kbd { margin: 0; background: var(--head2); border: 1px solid var(--li
 .fav.more, .fav.text { font-size: 11px; padding: 0 8px; color: var(--navy2); }
 .fav-sep { width: 1px; height: 18px; background: var(--line); margin: 0 4px; }
 .qm-row.best { background: #e3f6ec; box-shadow: inset 3px 0 0 #14845b; }
+
+/* ====== Ladder editor laid out like the engineering tool ====== */
+.lad .net + .net { margin-top: 8px; }
+.net-head .nlabel { white-space: nowrap; }
+.net-err { display: inline-grid; place-items: center; width: 14px; height: 14px; border-radius: 50%; background: var(--err); color: #fff; font: 700 10px var(--sans); cursor: help; flex: none; }
+.net-body .end { display: none; }   /* LAD rungs end open: no right power rail */
+
+/* contacts and coils: absolute address above the symbolic operand, both above the symbol */
+.el.sym-el { margin-top: 8px; }
+.el.sym-el .addr { height: 12px; min-height: 0; line-height: 12px; }
+.el.sym-el .tagname { height: 16px; line-height: 14px; }
+.el.sym-el::before, .el.sym-el::after { top: 40px; }
+
+/* connections: select one to insert there; drop markers appear only while dragging */
+.wire-slot .drop-mark { display: none; position: absolute; left: 50%; top: -5px; width: 8px; height: 8px; margin-left: -4px; border: 1px solid #14845b; background: #e7f7ef; pointer-events: none; z-index: 2; }
+.lad.dragging .wire-slot .drop-mark { display: block; }
+.lad.dragging .wire-slot.near .drop-mark { background: #14845b; transform: scale(1.4); }
+.wire-slot.sel { border-top: 3px solid #00848c; }
+.wire-slot.sel .drop-mark { display: block; background: #00848c; border-color: #00848c; }
+.drop-op { outline: 2px dashed #14845b; outline-offset: 1px; background: #e7f7ef; }
+
+/* boxes (timers, counters, MOVE, math, block calls, empty box): operands outside the box, EN/ENO on the rung */
+.el.box-el { text-align: left; min-width: 0; }
+.tb-top { height: 22px; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; }
+.tb-top .addr { font-size: 9.5px; line-height: 10px; min-height: 0; color: var(--faint); }
+.tb-top .tagname { line-height: 12px; min-height: 0; font-size: 11px; }
+.tbox { display: grid; grid-template-columns: auto minmax(72px, auto) auto; }
+.tbox > div { box-sizing: border-box; height: 18px; display: flex; align-items: center; font-size: 11px; white-space: nowrap; }
+.tbox .tb-l { position: relative; justify-content: flex-end; padding: 0 16px 0 2px; min-width: 14px; }
+.tbox .tb-r { position: relative; justify-content: flex-start; padding: 0 2px 0 16px; min-width: 14px; }
+.tbox .tb-mid { justify-content: space-between; gap: 12px; padding: 0 4px; background: #fff; border-left: 2px solid #222; border-right: 2px solid #222; }
+.tbox .tb-mid.tb-head { justify-content: center; border-top: 2px solid #222; font-weight: 700; }
+.tbox .tb-mid.tb-last { border-bottom: 2px solid #222; }
+.tbox .tb-l.stub-l::after { content: ''; position: absolute; right: 0; top: 50%; width: 12px; border-top: 1px solid #222; }
+.tbox .tb-r.stub-r::before { content: ''; position: absolute; left: 0; top: 50%; width: 12px; border-top: 1px solid #222; }
+.tbox .tb-l.tb-flow::after, .tbox .tb-r.tb-flow::before { content: ''; position: absolute; left: 0; right: 0; top: 50%; margin-top: -1px; border-top: 2px solid #222; }
+.tbox .pn { color: var(--text); }
+.tbox .pv { color: var(--text); cursor: text; padding: 0 2px; border: 1px solid transparent; }
+.tbox .pv.empty { color: var(--err); }
+.tbox .pv:hover { background: #fff7e6; }
+.tbox .live { color: var(--muted); font: 10.5px var(--mono); }
+.tbox .outv { display: inline-flex; gap: 6px; align-items: baseline; }
+.tb-name { color: var(--err); cursor: text; padding: 0 6px; }
+.tb-name:hover { background: #fff7e6; }
+.el.missing .tb-mid { border-color: var(--err); }
+.net.mon .el.t .tb-mid { border-color: var(--true); }
+.net.mon .el.f .tb-mid { border-color: var(--false); border-style: dashed; }
+.net.mon .el.t .tb-flow::after, .net.mon .el.t .tb-flow::before { border-top-color: var(--true); }
+
+/* comparator: operand above, box on the rung, operand below */
+.el.cmp-el { display: flex; flex-direction: column; align-items: center; margin-top: 10px; position: relative; }
+.el.cmp-el .cmp-op { font-size: 11px; line-height: 14px; height: 16px; }
+.el.cmp-el .cmp-box { border: 2px solid #222; background: #fff; min-width: 56px; text-align: center; }
+.el.cmp-el .cmp-title { font-weight: 700; font-size: 10px; line-height: 13px; }
+.el.cmp-el .cmp-box select { border: 0; background: transparent; font: inherit; font-weight: 700; padding: 0; }
+.el.cmp-el::before, .el.cmp-el::after { content: ''; position: absolute; top: 39px; width: calc(50% - 30px); border-top: 2px solid #222; }
+.el.cmp-el::before { left: 0; } .el.cmp-el::after { right: 0; }
+
+/* branch close arrow, hover, move and multi-select feedback for every instruction */
+.branch-end { margin-top: 38px; padding: 0 2px; border: 0; background: none; color: #14845b; cursor: grab; }
+.branch-end:hover { color: #0d5f42; }
+.lad .el { cursor: grab; }
+.lad .el:hover:not(.sel) { outline: 1.5px solid var(--petrol); outline-offset: 1px; border-radius: 2px; }
+.lad .el.moving { opacity: .4; cursor: grabbing; }
+.lad .el.pre-sel { outline: 1.5px dashed #00848c; outline-offset: 1px; border-radius: 2px; }

@@ -1,20 +1,23 @@
-// Ladder (LAD) editor. Networks of series elements, parallel branches, instruction boxes and coils.
-// Mouse: click to select, double-click an operand to edit, drag instructions from the task card,
-// right-click for the context menu, Ctrl+wheel to zoom. Keys come from commands.js.
-import { COMPARE, DEFAULT_PIN, FB } from '../../core/catalog.js'
-import { IDENT, newNetwork, uid } from '../../core/model.js'
-import { classifyOperand, fieldName, instancesOf, operandFields, operandSequence, pinNames, renameInstance, suggestedTagType, valueOf } from '../../core/operands.js'
+// Ladder (LAD) editor, laid out and operated like the S7 engineering tool.
+// Select a position (click a rung line or an instruction); insert there from the favorites bar, the
+// Instructions card (double-click or drag), the toolbar or a shortcut (Shift+F2 …). Drag an FB or FC from the
+// project tree onto a network to call it. Click selects, typing or a double-click edits an operand, right-click
+// opens the context menu, a box dragged over empty rung space selects several instructions, Ctrl+wheel zooms.
+import { COMPARE, FB } from '../../core/catalog.js'
+import { IDENT, newBlock, newNetwork, uid } from '../../core/model.js'
+import { BOX_INSTRUCTIONS, boxKindFor, classifyOperand, fieldName, instancesOf, operandFields, operandSequence, pinNames, renameInstance, renameTag, setBlockResolver, suggestedTagType, valueOf } from '../../core/operands.js'
 import { contextMenu, h, svg } from '../dom.js'
 import { editor, toast } from '../commands.js'
 import { isOnline, readOperand } from '../online.js'
 import { PALETTE, iconFor } from '../palette.js'
-import { closeQuick, openQuick } from './lad-quick.js'
 import { opList } from './op-list.js'
 import { seriesAt, insertAtGap, startBranch, closeBranch, canDropBranchEnd, addParallelPath, removeBranch, openBranches, validateLadderNetwork } from '../../core/ladder-edit.js'
-import { blockById, edit, on, select, state } from '../store.js'
+import { blockById, dragging, edit, on, select, state } from '../store.js'
+import { callOptionsDialog, defineTagDialog, renameTagDialog } from '../block-dialogs.js'
 
 const key = (p) => p.join('.')
 const clone = (x) => JSON.parse(JSON.stringify(x))
+const isCallee = (b) => b && (b.kind === 'FB' || b.kind === 'FC')
 
 export function resolve(net, path) {
   let list = net.elements
@@ -22,16 +25,20 @@ export function resolve(net, path) {
   for (let k = 0; k < pairs; k += 2) list = list[path[k]].branches[path[k + 1]]
   return n % 2 ? { list, index: path[n - 1] } : { list, index: list.length - 1 }
 }
+/** Operand text as typed or shown ("S1", #x, "DB".x) -> the stored name (S1, x, DB.x). */
+export const cleanOperand = (v) => String(v ?? '').trim().replace(/^#/, '').replace(/^"([^"]*)"/, '$1')
+
 export function mountLadder(host, tab) {
   const blockId = tab.id
   const block = () => blockById(blockId)
+  setBlockResolver((name) => state.project.blocks.find((b) => isCallee(b) && b.name === name))
   let zoom = 1, pendingEdit = false
   let branchDrag = null
   let moveDrag = null   // an existing instruction being dragged to a new position: { network, path }
   const root = h('div', { class: 'lad', tabindex: '-1' })
   host.append(favoritesBar(), h('div', { class: 'ed-body', style: { background: '#eef1f4' } }, root))
   const body = host.lastChild
-  const refs = { nets: new Map() }   // network index -> { el, wires:[{el,key}], els:Map(key->el), vals:[...] }
+  const refs = { nets: new Map() }   // network index -> { el, ctx }
 
   /* scroll cues: shadows and buttons only on a side that has hidden content */
   const syncs = new WeakMap()
@@ -46,29 +53,40 @@ export function mountLadder(host, tab) {
     syncs.set(bodyEl, sync); syncs.set(main, sync); ro.observe(bodyEl); ro.observe(main)
     requestAnimationFrame(sync)
   }
-  const netGap = (i) => h('div', { class: 'net-gap' }, h('button', { type: 'button', class: 'net-plus', tabindex: '-1', title: 'Add a network here', onClick: () => insertNetworkAt(i) }, '+ Network'))
 
-  /* the "+" nearest the pointer (within 48px) fades in; only one at a time */
-  let nearEl = null, probeRaf = 0, lastMove = null
+  /* the drop position nearest the pointer while dragging */
+  let nearEl = null
   const setNear = (el) => { if (nearEl === el) return; nearEl?.classList.remove('near'); nearEl = el; el?.classList.add('near') }
-  function probe(ev) {
-    let best = null, bd = 48
-    const net = ev.target.closest?.('.net')
-    if (net) for (const b of net.querySelectorAll('.gap-plus:not(.pill)')) {
-      const r = b.getBoundingClientRect(), d = Math.hypot(ev.clientX - (r.left + r.width / 2), ev.clientY - (r.top + r.height / 2))
-      if (d < bd) { bd = d; best = b.parentElement }
-    }
-    if (!best) for (const z of root.querySelectorAll('.net-gap')) { const r = z.getBoundingClientRect(); if (ev.clientY >= r.top - 8 && ev.clientY <= r.bottom + 8) { best = z; break } }
-    setNear(best)
-  }
   const sel = () => (state.selection?.block === blockId ? state.selection : null)
   const setSel = (s) => { select(s ? { block: blockId, ...s } : null) }
   const addrOf = (name) => state.project.tags.find((t) => t.name === name)?.address ?? ''
   const MATH_OPS = { add: 'ADD', sub: 'SUB', mul: 'MUL', div: 'DIV' }
-  const UNKNOWN_TIP = 'This tag does not exist yet. Double-click to change it, or create it.'
-  const scope = () => ({ tags: new Set(state.project.tags.map((t) => t.name)), locals: new Set(Object.values(block().interface).flat().map((v) => v.name)), instances: new Map(instancesOf(block()).map((i) => [i.name, i.fb])) })
+  const UNKNOWN_TIP = 'This tag is not defined. Right-click the operand and choose "Define tag…".'
+  const globalDbs = () => state.project.blocks.filter((d) => d.kind === 'DB' && !d.instanceOf)
+  const scope = () => {
+    const b = block()
+    const instances = new Map(instancesOf(b).map((i) => [i.name, i.fb]))
+    for (const d of globalDbs()) instances.set(d.name, null)
+    return { tags: new Set(state.project.tags.map((t) => t.name)), locals: new Set(Object.values(b.interface).flat().map((v) => v.name)), instances }
+  }
   let sc = scope()   // refreshed on every render; marks unknown operands
   let palDrag = null   // payload of the Instructions-card item being dragged
+
+  /** How an operand is shown: global tags in quotes, block variables with #, data block members as "DB".x */
+  function shown(value) {
+    const v = String(value ?? '').trim(); if (!v) return ''
+    const kind = classifyOperand(v, sc)
+    if (kind === 'tag') return `"${v}"`
+    if (kind === 'local') return `#${v}`
+    const m = /^([A-Za-z_]\w*)\.(.+)$/.exec(v)
+    if (m && kind === 'pin') {
+      const isDb = state.project.blocks.some((b) => b.kind === 'DB' && b.name === m[1])
+      const local = sc.locals.has(m[1]) || (!isDb && block().kind !== 'OB')
+      return local ? `#${m[1]}.${m[2]}` : `"${m[1]}".${m[2]}`
+    }
+    return v
+  }
+  const instShown = (name, isDb) => (!name ? '' : isDb || block().kind === 'OB' ? `"${name}"` : `#${name}`)
 
   /* ------------------------------------------------------------- editing -- */
   function gapOf(net, s, after = true) {
@@ -89,6 +107,7 @@ export function mountLadder(host, tab) {
   function make(kind) {
     if (kind === 'NO' || kind === 'NC') return { k: kind, tag: '' }
     if (kind === 'P' || kind === 'N') return { k: kind, tag: '', inst: `${kind}_${uid('').slice(-4)}` }
+    if (kind === 'empty') return { k: 'empty' }
     if (kind === 'cmp' || kind.startsWith('cmp:')) { const op = kind.slice(4); return { k: 'cmp', op: COMPARE.includes(op) ? op : '==', a: '', b: '' } }
     if (kind === 'move') return { k: 'move', src: '', dest: '' }
     if (kind.startsWith('math:') && MATH_OPS[kind.slice(5)]) return { k: 'math', op: kind.slice(5), a: '', b: '', dest: '' }
@@ -110,7 +129,8 @@ export function mountLadder(host, tab) {
 
   function insert(kind, at) {
     const b = block(); if (!b) return
-    if (kind === 'box?') { chooseBox(); return }
+    if (kind === 'box?') kind = 'empty'
+    if (kind.startsWith('call:')) { insertCall(kind.slice(5), at); return }
     // Validate a detached edit first. A failed close must not alter history or the program.
     if (['branch', 'closeBranch', 'addPath', 'removeBranch'].includes(kind)) {
       const s = at ?? sel(), ni = Math.min(s?.network ?? b.networks.length - 1, b.networks.length - 1)
@@ -127,7 +147,6 @@ export function mountLadder(host, tab) {
           else { removeBranch(net, path); gap = { path: path.slice(0, -1), index: path.at(-1) } }
         }
         edit(p => { p.blocks.find(x => x.id === blockId).networks[ni] = net; state.selection = { block: blockId, network: ni, gap } })
-        if (kind === 'branch') toast('Parallel path started. Add instructions to it, then close it where the paths should meet (Shift+F9).')
       } catch (error) { toast(error.message) }
       return
     }
@@ -147,70 +166,88 @@ export function mountLadder(host, tab) {
         state.selection = { block: blockId, network: ni, coil: at2 }
         return
       }
-      const path = insertAtGap(net, gapOf(net, s), el)
+      const path = insertAtGap(net, gapOf(net, s?.paths ? null : s), el)
       pendingEdit = true
       state.selection = { block: blockId, network: ni, path }
     })
   }
+
+  /* ------------------------------------------------------- block calls -- */
+  /** Ask how a called FB keeps its data (TIA "Call options"), then return the call element plus the change
+   *  that creates its instance (an instance DB, or a Static variable of the calling FB). FCs need no instance. */
+  async function prepareCall(name) {
+    const callee = state.project.blocks.find((b) => isCallee(b) && b.name === name)
+    if (!callee) { toast(`There is no FB or FC named "${name}".`); return null }
+    const caller = block()
+    if (callee.id === caller.id) { toast(`${callee.name} cannot call itself.`); return null }
+    if (callee.kind === 'FC') return { el: { k: 'call', block: callee.name, args: {} }, apply: () => {} }
+    const choice = await callOptionsDialog({ callee, caller, project: state.project })
+    if (!choice) return null
+    const el = { k: 'call', block: callee.name, inst: choice.name, ...(choice.multi ? { multi: true } : {}), args: {} }
+    const apply = (p) => {
+      if (choice.multi) {
+        const blk = p.blocks.find((x) => x.id === blockId); blk.interface.static = blk.interface.static ?? []
+        if (!blk.interface.static.some((v) => v.name === choice.name)) blk.interface.static.push({ name: choice.name, type: callee.name })
+      } else if (!p.blocks.some((b) => b.kind === 'DB' && b.name === choice.name)) p.blocks.push(newBlock('DB', choice.name, null, choice.number, { instanceOf: callee.name }))
+    }
+    return { el, apply }
+  }
+  async function insertCall(name, at) {
+    const s0 = at ?? sel()
+    const prep = await prepareCall(name); if (!prep || !block()) return
+    edit((p) => {
+      const blk = p.blocks.find((x) => x.id === blockId)
+      if (!blk.networks.length) blk.networks.push(newNetwork('LAD'))
+      const ni = Math.min(s0?.network ?? blk.networks.length - 1, blk.networks.length - 1), net = blk.networks[ni]
+      prep.apply(p)
+      let path
+      try { path = insertAtGap(net, gapOf(net, s0?.network === ni && !s0.paths ? s0 : null), prep.el) } catch { path = insertAtGap(net, { path: [], index: net.elements.length }, prep.el) }
+      pendingEdit = true
+      state.selection = { block: blockId, network: ni, path }
+    })
+  }
+  /** Turn an empty box ("??") into the instruction or block the learner typed. */
+  async function convertEmpty(at, name) {
+    if (!String(name ?? '').trim()) return
+    const kind = boxKindFor(name, state.project)
+    if (!kind) { toast(`"${name}" is not an instruction or block. Choose one from the list.`); return }
+    let el, apply = () => {}
+    if (kind.startsWith('call:')) { const prep = await prepareCall(kind.slice(5)); if (!prep) return; el = prep.el; apply = prep.apply }
+    else el = make(kind)
+    if (!el) return
+    edit((p) => {
+      const net = p.blocks.find((x) => x.id === blockId)?.networks[at.network]; if (!net) return
+      const { list, index } = resolve(net, at.path); if (list[index]?.k !== 'empty') return
+      apply(p)
+      list[index] = el
+      pendingEdit = operandFields(el).length > 0
+      state.selection = { block: blockId, network: at.network, path: at.path }
+    })
+  }
+
   /* ------------------------------------------------- favorites bar (TIA) -- */
-  // The row of most-used instructions above the editor: click inserts at the selection, or drag onto a rung.
+  // The engineering tool's LAD favorites: NO, NC, assignment, empty box, open branch, close branch.
+  // Click inserts at the selected position; drag places it on a rung.
   function favoritesBar() {
-    const FAVS = [
-      [(l) => l.k === 'NO', 'NO'], [(l) => l.k === 'NC', 'NC'], [(l) => l.coil === 'coil', 'coil'], [(l) => l.coil === 'set', 'set'], [(l) => l.coil === 'reset', 'reset'],
-      '|', [(l) => l.fb === 'TON', 'box:TON'], [(l) => l.fb === 'CTU', 'box:CTU'], [(l) => l.k === 'cmp' && l.op === '==', 'cmp'], [(l) => l.k === 'move', 'move'],
-      '|', [(l) => l.k === 'branch', 'branch'], [(l) => l.k === 'closeBranch', 'closeBranch'],
-    ]
-    const bar = h('div', { class: 'fav-bar', role: 'toolbar', 'aria-label': 'Favorite instructions' })
-    for (const f of FAVS) {
-      if (f === '|') { bar.append(h('span', { class: 'fav-sep' })); continue }
-      const item = palFind(f[0]); if (!item) continue
-      const b = h('button', { type: 'button', class: 'fav', draggable: 'true', title: `${item.name}${item.short ? ` (${item.short})` : ''}\nClick to insert at the selection, or drag onto a rung.`, 'aria-label': item.name,
+    const FAVS = [[(l) => l.k === 'NO', 'NO'], [(l) => l.k === 'NC', 'NC'], [(l) => l.coil === 'coil', 'coil'], [(l) => l.k === 'empty', 'empty'], [(l) => l.k === 'branch', 'branch'], [(l) => l.k === 'closeBranch', 'closeBranch']]
+    const bar = h('div', { class: 'fav-bar', role: 'toolbar', 'aria-label': 'Favorites' })
+    for (const [match, kind] of FAVS) {
+      const item = palFind(match); if (!item) continue
+      const b = h('button', { type: 'button', class: 'fav', draggable: 'true', title: `${item.name}${item.short ? ` (${item.short})` : ''}`, 'aria-label': item.name,
         onMousedown: (e) => e.preventDefault(),   // keep the selection and any open operand box
-        onClick: () => (f[1].includes(':') || ['NO', 'NC', 'cmp', 'move', 'branch', 'closeBranch', ...COILS].includes(f[1]) ? insert(f[1]) : dropPayload(item.lad)) }, iconFor(item))
+        onClick: () => insert(kind) }, iconFor(item))
       b.addEventListener('dragstart', (e) => { e.dataTransfer.setData('text/plain', JSON.stringify({ lad: item.lad, fbd: item.fbd })); e.dataTransfer.effectAllowed = 'copy' })
       bar.append(b)
     }
-    bar.append(h('span', { class: 'fav-sep' }), h('button', { type: 'button', class: 'fav more', title: 'All instructions (Shift+F5)', onMousedown: (e) => e.preventDefault(), onClick: () => chooseBox() }, 'More…'),
-      h('span', { class: 'grow' }),
-      h('button', { type: 'button', class: 'fav text', title: 'Insert a network below the selected one (Ctrl+R)', onMousedown: (e) => e.preventDefault(), onClick: () => insertNetwork(true) }, '+ Network'))
+    bar.append(h('span', { class: 'grow' }),
+      h('button', { type: 'button', class: 'fav ins-net', title: 'Insert network (Ctrl+R)', 'aria-label': 'Insert network', onMousedown: (e) => e.preventDefault(), onClick: () => insertNetwork(true) },
+        svg('svg', { class: 'pi', viewBox: '0 0 30 18', width: 30, height: 18 }, svg('path', { d: 'M3 3v12M3 9h24M20 5h7v8h-7z', fill: 'none', stroke: '#222', 'stroke-width': 1.6 }))))
     return bar
   }
-
-  /* ---------------------------------------------- quick-insert popover -- */
   function palFind(match) { return PALETTE.flatMap((g) => g.items).find((i) => i.lad && match(i.lad)) }
-  const palIcon = (match) => { const i = palFind(match); return i ? iconFor(i) : null }
   function railState(ni, gap) {
     const net = block().networks[ni], open = net ? openBranches(net) : []
     return { net, unfinished: open.length > 0, canClose: !!gap && open.length > 0 && canDropBranchEnd(net, open.at(-1), gap) }
-  }
-  const slotFor = (ni, gap) => [...(refs.nets.get(ni)?.el.querySelectorAll('[data-gap]') ?? [])].find((w) => w.dataset.gap === JSON.stringify(gap))
-  function openQuickAt(ni, gap, more = false) {
-    const slot = slotFor(ni, gap), anchor = slot?.querySelector('.gap-plus'); if (!anchor) return
-    setSel({ network: ni, gap })
-    const at = { network: ni, gap }
-    const go = (kind) => () => { setSel({ network: ni, gap }); insert(kind, at) }
-    const { unfinished, canClose } = railState(ni, gap)
-    const row = (label, desc, kind, keys, icon, extra) => ({ label, desc, keys, icon, run: go(kind), ...extra })
-    const rows = [
-      canClose ? row('Close the parallel path here', 'Join the two paths on this wire', 'closeBranch', 'Shift+F9', palIcon((l) => l.k === 'closeBranch'), { hot: true }) : null,
-      row('Normally open contact', 'Passes power when the tag is ON', 'NO', 'Shift+F2', palIcon((l) => l.k === 'NO')),
-      row('Normally closed contact', 'Passes power when the tag is OFF', 'NC', 'Shift+F3', palIcon((l) => l.k === 'NC')),
-      row('Output coil', 'Turns the tag ON while the rung has power', 'coil', 'Shift+F7', palIcon((l) => l.coil === 'coil')),
-      row('Set coil (S)', 'Switches the tag ON and keeps it ON', 'set', 'Shift+F4', palIcon((l) => l.coil === 'set')),
-      row('Reset coil (R)', 'Switches the tag OFF and keeps it OFF', 'reset', 'Shift+F6', palIcon((l) => l.coil === 'reset')),
-      row('On-delay timer (TON)', 'Output comes ON after the input has been ON for the set time', 'box:TON', '', palIcon((l) => l.fb === 'TON')),
-      row('Up counter (CTU)', 'Counts every OFF to ON change of the input', 'box:CTU', '', palIcon((l) => l.fb === 'CTU')),
-      unfinished ? null : row('Parallel path (OR)', 'Start a second path here', 'branch', 'Shift+F8', palIcon((l) => l.k === 'branch')),
-      { label: 'New network below', desc: 'Add an empty rung under this one', keys: 'Ctrl+R', icon: h('span', { class: 'qm-plus' }, '+'), run: () => { setSel({ network: ni }); insertNetwork(true) } },
-      { label: 'More instructions…', desc: 'Timers, counters, compare, move and more', more: true, icon: h('span', { class: 'qm-plus' }, '…') },
-    ].filter(Boolean)
-    const groups = PALETTE.map((g) => ({ group: g.group, items: g.items.filter((i) => i.lad).map((i) => ({ label: i.name, keys: i.short, icon: iconFor(i), run: () => { setSel({ network: ni, gap }); dropPayload(i.lad, at) } })) })).filter((g) => g.items.length)
-    openQuick({ anchor, rows, groups, startMore: more, restore: () => slotFor(ni, gap)?.focus({ preventScroll: true }) })
-  }
-  function chooseBox() {
-    const s = sel(), b = block()
-    const ni = Math.min(s?.network ?? b.networks.length - 1, b.networks.length - 1); if (ni < 0) return
-    openQuickAt(ni, s?.gap && s.network === ni && slotFor(ni, s.gap) ? clone(s.gap) : { path: [], index: 0 }, true)
   }
   function dropPayload(p, at) {
     if (p.coil) return insert(p.coil, at)
@@ -219,9 +256,10 @@ export function mountLadder(host, tab) {
     if (p.k === 'math') return insert(`math:${p.op}`, at)
     insert(p.k, at)
   }
+
   /* --------------------------------------------------- marquee multi-select -- */
-  // Drag a box over empty rung space to select several instructions, like TIA. Selection is kept as
-  // { network, paths:[key strings] }; copy / cut / delete and "branch around" all act on the whole group.
+  // Drag a box over empty rung space to select several instructions. Selection is kept as
+  // { network, paths:[key strings] }; copy / cut / delete act on the whole group.
   function startMarquee(ev, ni) {
     const netEl = refs.nets.get(ni)?.el; if (!netEl) return
     const sx = ev.clientX, sy = ev.clientY
@@ -232,7 +270,7 @@ export function mountLadder(host, tab) {
       if (!moved && Math.hypot(e.clientX - sx, e.clientY - sy) > 4) moved = true
       Object.assign(boxEl.style, { left: `${x1}px`, top: `${y1}px`, width: `${x2 - x1}px`, height: `${y2 - y1}px` })
       paths = []
-      for (const nd of netEl.querySelectorAll('.el.sym-el')) {
+      for (const nd of netEl.querySelectorAll('.el[data-path]')) {
         const isCoil = nd.dataset.path.startsWith('c')
         const r = nd.getBoundingClientRect(), hit = moved && !isCoil && r.left < x2 && r.right > x1 && r.top < y2 && r.bottom > y1
         nd.classList.toggle('pre-sel', hit)
@@ -242,7 +280,7 @@ export function mountLadder(host, tab) {
     const onUp = () => {
       removeEventListener('mousemove', onMove, true); removeEventListener('mouseup', onUp, true)
       boxEl.remove(); netEl.querySelectorAll('.pre-sel').forEach((x) => x.classList.remove('pre-sel'))
-      if (!moved) return   // a plain click: the network selection set by the .net handler stands
+      if (!moved) return
       if (paths.length > 1) setSel({ network: ni, paths })
       else if (paths.length === 1) setSel({ network: ni, path: paths[0].split('.').map(Number) })
       else setSel({ network: ni })
@@ -250,10 +288,10 @@ export function mountLadder(host, tab) {
     addEventListener('mousemove', onMove, true); addEventListener('mouseup', onUp, true)
     ev.preventDefault()
   }
-  /** Shift+click an instruction to add or remove it from the selection (TIA extends a selection this way). */
+  /** Shift+click an instruction to add or remove it from the selection. */
   function toggleInSelection(ni, k) {
     const cur = sel()
-    let paths = cur && cur.network === ni ? (cur.paths ? [...cur.paths] : (cur.path?.length % 2 ? [key(cur.path)] : [])) : []
+    const paths = cur && cur.network === ni ? (cur.paths ? [...cur.paths] : (cur.path?.length % 2 ? [key(cur.path)] : [])) : []
     const i = paths.indexOf(k)
     if (i >= 0) paths.splice(i, 1); else paths.push(k)
     if (paths.length > 1) setSel({ network: ni, paths })
@@ -263,14 +301,14 @@ export function mountLadder(host, tab) {
   function removeMany(s) {
     if (!block().networks[s.network]) return
     edit((p) => {
-      const blk = p.blocks.find((x) => x.id === blockId), net = blk.networks[s.network]
-      for (const kk of s.paths) { try { const { list, index } = resolve(net, kk.split('.').map(Number)); if (list[index]) list[index].__del = true } catch { /* path gone */ } }
+      const net = p.blocks.find((x) => x.id === blockId).networks[s.network]
+      for (const kk of s.paths) { try { const { list, index } = resolve(net, kk.split('.').map(Number)); if (list[index]) list[index].__del = true } catch { /* gone */ } }
       ;(function strip(l) { for (let i = l.length - 1; i >= 0; i--) { const e = l[i]; if (e.__del) { l.splice(i, 1); continue } if (e.branches) e.branches.forEach(strip) } })(net.elements)
       tidyBranches(net.elements)
       state.selection = { block: blockId, network: s.network }
     })
   }
-  /** Wrap a contiguous group of selected instructions in a new parallel branch (empty second path to fill in). */
+  /** Open a parallel branch around a contiguous group of selected instructions (empty lower path to fill in). */
   function branchAround() {
     const s = sel(); if (!s?.paths?.length) return
     const arrs = s.paths.map((k) => k.split('.').map(Number)).sort((a, b) => a.at(-1) - b.at(-1))
@@ -279,18 +317,18 @@ export function mountLadder(host, tab) {
     const contiguous = idxs.every((v, i) => i === 0 || v === idxs[i - 1] + 1)
     if (!sameParent || !contiguous) { toast('To branch around a group, select instructions that sit next to each other on the same line.'); return }
     edit((p) => {
-      const blk = p.blocks.find((x) => x.id === blockId), net = blk.networks[s.network]
+      const net = p.blocks.find((x) => x.id === blockId).networks[s.network]
       let list = net.elements; for (let kk = 0; kk < parent.length; kk += 2) list = list[parent[kk]].branches[parent[kk + 1]]
       const seg = list.splice(idxs[0], idxs.length)
       list.splice(idxs[0], 0, { k: 'branch', closed: true, branches: [seg, []] })
       state.selection = { block: blockId, network: s.network, branch: [...parent, idxs[0]] }
     })
-    toast('Branched around the selection. Add the alternative instructions to the empty parallel path.')
   }
+
   function remove() {
     const s = sel(); if (!s) return
     if (s.paths) { removeMany(s); return }
-    if (s.gap) { toast('A wire is selected. Select the instruction or network you want to delete.'); return }
+    if (s.gap) { toast('A connection is selected. Select the instruction or network you want to delete.'); return }
     if (s.branch) { insert('removeBranch'); return }
     if (!block().networks[s.network]) return
     if (s.path?.length && s.path.length % 2 === 0) return   // a parallel path is selected, not an instruction
@@ -317,15 +355,13 @@ export function mountLadder(host, tab) {
       blk.networks.splice(ni, 0, newNetwork('LAD'))
       state.selection = { block: blockId, network: ni, gap: { path: [], index: 0 } }
     })
-    const rung = refs.nets.get(ni)?.el
-    rung?.scrollIntoView({ block: 'nearest' })
-    rung?.querySelector('[data-gap]')?.focus({ preventScroll: true })
+    refs.nets.get(ni)?.el?.scrollIntoView({ block: 'nearest' })
   }
   function insertNetwork(after = true, atEnd = false) {
     const n = block().networks.length, i = atEnd ? n - 1 : sel()?.network ?? n - 1
     insertNetworkAt(Math.max(0, after ? i + 1 : i))
   }
-  /** Copy what is selected: one instruction (or a whole parallel branch), one coil, or else the network. */
+  /** Copy what is selected: a group, one instruction (or a whole branch), one coil, or else the network. */
   function copy() {
     const s = sel(); if (!s) return
     const net = block().networks[s.network]; if (!net) return
@@ -344,7 +380,7 @@ export function mountLadder(host, tab) {
     const s = sel(); if (!s || s.gap) { toast('Select an instruction, a coil or a network to cut.'); return }
     copy(); remove()
   }
-  /** Like TIA, pasted timers/counters/edges get their own instances, and references inside the pasted part follow them. */
+  /** Pasted timers/counters/edges get their own instances, and references inside the pasted part follow them. */
   function renewInstances(blk, elements) {
     const used = new Set(), names = new Map()
     ;(function walk(l) { l.forEach((e) => { if (e.inst) used.add(e.inst); e.branches?.forEach(walk) }) })(blk.networks.flatMap((x) => x.elements ?? []))
@@ -359,8 +395,9 @@ export function mountLadder(host, tab) {
   function paste() {
     const clip = state.clipboard; if (!clip) return
     const s = sel(), blk0 = block()
+    const ni = Math.min(s?.network ?? blk0.networks.length - 1, blk0.networks.length - 1)
     if (clip.kind === 'element' || clip.kind === 'coil') {
-      const ni = Math.min(s?.network ?? blk0.networks.length - 1, blk0.networks.length - 1); if (ni < 0) return
+      if (ni < 0) return
       edit((p) => {
         const blk = p.blocks.find((x) => x.id === blockId), net = blk.networks[ni], data = clone(clip.data)
         if (clip.kind === 'coil') {
@@ -368,16 +405,16 @@ export function mountLadder(host, tab) {
           net.coils.splice(at2, 0, data); state.selection = { block: blockId, network: ni, coil: at2 }; return
         }
         renewInstances(blk, [data])([data])
-        const path = insertAtGap(net, gapOf(net, s?.network === ni ? s : null), data)
+        const path = insertAtGap(net, gapOf(net, s?.network === ni && !s.paths ? s : null), data)
         state.selection = { block: blockId, network: ni, path }
       })
       return
     }
     if (clip.kind === 'elements') {
-      const ni = Math.min(s?.network ?? blk0.networks.length - 1, blk0.networks.length - 1); if (ni < 0) return
+      if (ni < 0) return
       edit((p) => {
         const blk = p.blocks.find((x) => x.id === blockId), net = blk.networks[ni]
-        let gap = gapOf(net, s?.network === ni ? s : null), last = null
+        let gap = gapOf(net, s?.network === ni && !s.paths ? s : null), last = null
         for (const d of clip.data) { const data = clone(d); renewInstances(blk, [data])([data]); last = insertAtGap(net, gap, data); gap = { path: gap.path, index: gap.index + 1 } }
         if (last) state.selection = { block: blockId, network: ni, path: last }
       })
@@ -393,12 +430,12 @@ export function mountLadder(host, tab) {
       state.selection = { block: blockId, network: i + 1 }
     })
   }
-  /** Drag an existing instruction to a new wire within the same network. Insert a copy at the target, then
-   *  remove the original by identity (so index shifts and branch tidy-up cannot land it in the wrong place). */
+  /** Drag an existing instruction to a new connection within the same network. Insert a copy at the target,
+   *  then remove the original by identity (so index shifts and branch tidy-up cannot misplace it). */
   function moveElement(from, gap) {
     if (!block()) return
     edit((p) => {
-      const blk = p.blocks.find((x) => x.id === blockId), net = blk.networks[from.network]; if (!net) return
+      const net = p.blocks.find((x) => x.id === blockId).networks[from.network]; if (!net) return
       const { list, index } = resolve(net, from.path), src = list[index]; if (!src) return
       src.__moving = true
       const data = clone(src); delete data.__moving; data.__moved = true
@@ -412,7 +449,7 @@ export function mountLadder(host, tab) {
   }
   function move(dir) {
     const b = block(), s = sel(); if (!s) { if (b.networks.length) setSel({ network: 0 }); return }
-    if (s.paths) { setSel({ network: s.network, path: s.paths[0].split('.').map(Number) }); return }   // arrow keys collapse a multi-selection
+    if (s.paths) { setSel({ network: s.network, path: s.paths[0].split('.').map(Number) }); return }
     const nets = b.networks
     if (dir === 'up' || dir === 'down') { const n = s.network + (dir === 'down' ? 1 : -1); if (n >= 0 && n < nets.length) setSel({ network: n }); return }
     const net = nets[s.network], flat = []
@@ -436,34 +473,35 @@ export function mountLadder(host, tab) {
     } catch { return null }   // the path no longer exists
   }
   const PLACEHOLDER = { bool: 'tag name', time: 'e.g. T#5s', int: 'e.g. 10', any: 'number or tag' }
-  const placeholderFor = (f) => (f.field === 'dest' ? 'tag for the result' : PLACEHOLDER[f.kind])
+  const placeholderFor = (f) => (f.dir === 'out' || f.field === 'dest' ? 'tag for the result' : PLACEHOLDER[f.kind])
   function suggestionsFor(f) {
     const fits = (type) => (f.kind === 'bool' ? type === 'Bool' : f.kind === 'time' ? type === 'Time' : type !== 'Bool')
     const SECTION = { input: 'Input', output: 'Output', inout: 'InOut', static: 'Static', temp: 'Temp' }
     const names = [
       ...state.project.tags.map((t) => ({ value: t.name, type: t.type, address: t.address ?? '', comment: t.comment ?? '', source: 'PLC tag' })),
-      ...Object.entries(block().interface).flatMap(([sec, vars]) => vars.map((v) => ({ value: v.name, type: v.type, init: v.init ?? '', comment: v.comment ?? '', source: `Local · ${SECTION[sec] ?? sec}` }))),
+      ...Object.entries(block().interface).flatMap(([sec, vars]) => vars.filter((v) => !isCallee(state.project.blocks.find((b) => b.name === v.type))).map((v) => ({ value: v.name, type: v.type, init: v.init ?? '', comment: v.comment ?? '', source: `Local · ${SECTION[sec] ?? sec}` }))),
+      ...globalDbs().flatMap((d) => (d.interface.static ?? []).map((v) => ({ value: `${d.name}.${v.name}`, type: v.type, init: v.init ?? '', comment: v.comment ?? '', source: `Data block ${d.name}` }))),
     ]
     const pins = instancesOf(block()).flatMap((i) => pinNames(i.fb).map((p) => ({ value: `${i.name}.${p.pin}`, type: { bool: 'Bool', time: 'Time' }[p.kind] ?? 'Int', comment: `${p.pin} of ${i.fb} ${i.name}`, source: 'Instance' }))).filter((o) => fits(o.type))
-    const lits = f.pin && f.kind === 'bool' ? ['TRUE', 'FALSE'].map((value) => ({ value, type: 'Bool', comment: 'Constant', source: 'Constant' })) : []
+    const lits = f.kind === 'bool' && (f.pin || f.dir) ? ['TRUE', 'FALSE'].map((value) => ({ value, type: 'Bool', comment: 'Constant', source: 'Constant' })) : []
     const all = [...names, ...pins, ...lits]
     return [...all.filter((o) => fits(o.type)), ...all.filter((o) => !fits(o.type)).map((o) => ({ ...o, other: true }))]
   }
-  /** Why this text cannot be an operand name, or '' when it is fine (a new valid name is allowed: it can be created). */
+  /** Why this text cannot be an operand name, or '' when it is fine (an undefined name is allowed: it shows red). */
   function nameProblem(v) {
     const cur = scope()
-    if (classifyOperand(v, cur) !== 'unknown') return ''
-    if (cur.instances.has(v)) return `${v} is a timer or counter in this block. Pick one of its pins, for example ${v}.${pinNames(cur.instances.get(v))[0]?.pin ?? 'Q'}.`
-    return IDENT.test(v) ? '' : `"${v}" is not a valid tag name. Use letters, digits and _ only, with no spaces, and do not start with a digit.`
+    if (!v || classifyOperand(v, cur) !== 'unknown') return ''
+    if (cur.instances.has(v) && cur.instances.get(v)) return `${v} is an instance in this block. Pick one of its parameters, for example ${v}.${pinNames(cur.instances.get(v))[0]?.pin ?? 'Q'}.`
+    return IDENT.test(v) || /^[A-Za-z_]\w*\.[A-Za-z_]\w*$/.test(v) ? '' : `"${v}" is not a valid tag name. Use letters, digits and _ only, with no spaces, and do not start with a digit.`
   }
 
-  /* the one floating text box used for operands and instance names */
+  /* the one floating text box used for operands, instance names and empty-box names */
   let activeInput = null
   function openInput(span, { initial = '', placeholder = '', options = [], check, done, selectAll = true }) {
     activeInput?.cancel()
     const r = span.getBoundingClientRect()
     const input = h('input', { class: 'op-edit', value: initial, placeholder, autocomplete: 'off', spellcheck: 'false', 'aria-label': placeholder, style: { left: `${r.left - 4}px`, top: `${r.top - 2}px`, width: `${Math.max(120, r.width + 12)}px` } })
-    if (!selectAll) input.dataset.typed = '1'   // seeded by type-to-edit: filter the tag list from the first keystroke
+    if (!selectAll) input.dataset.typed = '1'   // seeded by typing: filter the list from the first keystroke
     const list = options.length ? opList(input, options, (v) => { input.value = v; finish(true, 'enter') }) : null
     document.body.append(input); if (list) document.body.append(list.el)
     input.focus(); if (selectAll) input.select(); else input.setSelectionRange(input.value.length, input.value.length); list?.place()
@@ -487,40 +525,13 @@ export function mountLadder(host, tab) {
     activeInput = { input, cancel: () => !finished && close() }
   }
 
-  /* "Tag X does not exist yet" bubble. proceed(create) runs once, after either button. */
-  let bubble = null
-  const closeBubble = () => bubble?.dismiss()
-  function showBubble(span, name, proceed) {
-    closeBubble()
-    let settled = false
-    const settle = (create) => { if (settled) return; settled = true; dismiss(); proceed(create) }
-    const yes = h('button', { type: 'button', class: 'btn primary', onClick: () => settle(true) }, 'Create tag')
-    const no = h('button', { type: 'button', class: 'btn', onClick: () => settle(false) }, 'Not now')
-    const pop = h('div', { class: 'tag-bubble', role: 'alertdialog', 'aria-label': 'Tag does not exist' }, h('div', { class: 'tb-text' }, `Tag '${name}' does not exist yet.`), h('div', { class: 'tb-actions' }, yes, no))
-    pop.addEventListener('keydown', (e) => {
-      if (e.ctrlKey || e.metaKey || e.altKey || /^F\d/.test(e.key)) return
-      if (e.key === 'Enter') { e.preventDefault(); settle(document.activeElement !== no) }
-      else if (e.key === 'Escape') { e.preventDefault(); settle(false) }
-      else if (e.key === 'Tab') { e.preventDefault(); (document.activeElement === yes ? no : yes).focus() }
-    })
-    const outside = (e) => { if (!pop.contains(e.target)) settle(false) }
-    function dismiss() { pop.remove(); removeEventListener('mousedown', outside, true); if (bubble?.pop === pop) bubble = null }
-    document.body.append(pop)
-    const r = span.getBoundingClientRect()
-    pop.style.left = `${Math.max(4, Math.min(r.left - 4, innerWidth - pop.offsetWidth - 4))}px`
-    pop.style.top = `${r.bottom + 6 + pop.offsetHeight > innerHeight ? Math.max(4, r.top - pop.offsetHeight - 6) : r.bottom + 6}px`
-    addEventListener('mousedown', outside, true)
-    bubble = { pop, dismiss }
-    yes.focus()
-  }
-
   // The element may be gone (undo while editing): then the edit is dropped.
-  function setField(at, f, v, newTagType) {
+  function setField(at, f, v, newTag) {
     if (!targetIn(state.project, at)) return false
     edit((p) => {
       const t = targetIn(p, at)
       if (f.pin) { t.args = t.args ?? {}; t.args[f.pin] = v } else t[f.field] = v
-      if (newTagType) p.tags.push({ name: v, type: newTagType, address: '', comment: '' })
+      if (newTag) p.tags.push(newTag)
     }, `op:${blockId}:${at.coil !== undefined ? `c${at.coil}` : key(at.path)}:${fieldName(f)}`)   // one undo step per operand
     return true
   }
@@ -528,31 +539,18 @@ export function mountLadder(host, tab) {
     const t = targetIn(state.project, at), f = t && operandFields(t).find((x) => fieldName(x) === name); if (!f) return
     setSel(at)
     const span = body.querySelector(`.el.sel [data-op="${name}"]`); if (!span) return
-    const realInitial = valueOf(t, f)                       // the operand's current value, for change detection
-    const initial = seed != null ? seed : realInitial       // what the box shows: a typed character seeds a fresh entry
-    openInput(span, { initial, placeholder: placeholderFor(f), options: suggestionsFor(f), check: nameProblem, done: (v, how) => commitOperand(at, f, realInitial, v, how, span), selectAll: seed == null })
+    const realInitial = valueOf(t, f)
+    const initial = seed != null ? seed : realInitial
+    openInput(span, { initial, placeholder: placeholderFor(f), options: suggestionsFor(f), check: (raw) => nameProblem(cleanOperand(raw)), done: (v, how) => commitOperand(at, f, realInitial, v, how), selectAll: seed == null })
   }
-  function commitOperand(at, f, initial, v, how, span) {
+  function commitOperand(at, f, initial, raw, how) {
     const t = targetIn(state.project, at); if (!t) return
+    const v = cleanOperand(raw)
     const bad = nameProblem(v)
     if (bad) toast(bad)   // only a click-away gets here with a bad name; Enter and Tab keep the box open
-    const type = suggestedTagType(t, f)
-    const go = (create) => {
-      if (create || v !== initial) setField(at, f, v, create && !state.project.tags.some((x) => x.name === v) && type)
-      if (create) toast(`Tag ${v} created as ${type}. It has no address yet, so it is internal memory. Give it an address in the PLC tag table if it is wired to an input or output.`)
-      goNext(at, fieldName(f), how)
-    }
-    const unknown = !bad && classifyOperand(v, scope()) === 'unknown' && how !== 'blur' && (v !== initial || how === 'enter')
-    if (!unknown) { go(false); return }
-    // Write the name now: the bubble only decides whether to create the tag. If the learner moves on instead
-    // (Shift+F9, another wire, Esc), the bubble closes and the typed name stays on the rung.
-    if (v !== initial) setField(at, f, v, false)
-    const here = (at.coil !== undefined ? body.querySelector(`[data-path="c${at.coil}"] [data-op="${fieldName(f)}"]`) : body.querySelector(`.el.sel [data-op="${fieldName(f)}"]`)) ?? span
-    showBubble(here.isConnected ? here : span, v, (create) => {
-      if (create) setField(at, f, v, !state.project.tags.some((x) => x.name === v) && type)
-      if (create) toast(`Tag ${v} created as ${type}. It has no address yet, so it is internal memory. Give it an address in the PLC tag table if it is wired to an input or output.`)
-      goNext(at, fieldName(f), how)
-    })
+    if (v !== initial) setField(at, f, v)
+    if (!bad && v && v !== initial && classifyOperand(v, scope()) === 'unknown') toast(`"${v}" is not defined yet. Right-click the operand and choose "Define tag…".`)
+    goNext(at, fieldName(f), how)
   }
   /** Tab / Shift+Tab: neighbouring operand in reading order. Enter: the next empty required operand of the same instruction. */
   function goNext(at, name, how) {
@@ -570,17 +568,54 @@ export function mountLadder(host, tab) {
       return v !== old && (cur.instances.has(v) || cur.tags.has(v) || cur.locals.has(v)) ? `The name ${v} is already used in this block.` : ''
     }
     setSel(at)
-    openInput(span, { initial: old, placeholder: 'instance name', check: problem, done: (v) => {
-      const bad = problem(v)
+    openInput(span, { initial: old, placeholder: 'instance name', check: (raw) => problem(cleanOperand(raw)), done: (raw) => {
+      const v = cleanOperand(raw), bad = problem(v)
       if (bad) toast(bad); else if (v !== old) edit((p) => renameInstance(p.blocks.find((x) => x.id === blockId), old, v))
     } })
   }
+  /** The "??" header of an empty box: type an instruction (TON, MOVE, CMP ==, ADD …) or the name of an FB / FC. */
+  function openBoxName(at, seed) {
+    setSel(at)
+    const span = body.querySelector('.el.sel [data-boxname]'); if (!span) return
+    const options = [
+      ...BOX_INSTRUCTIONS.map(([value, comment]) => ({ value, type: 'Instruction', comment, source: 'Instruction' })),
+      ...state.project.blocks.filter((b) => isCallee(b) && b.id !== blockId).map((b) => ({ value: b.name, type: `${b.kind}${b.number}`, comment: b.comment || (b.kind === 'FB' ? 'Function block' : 'Function'), source: 'Block' })),
+    ]
+    openInput(span, { initial: seed ?? '', placeholder: 'instruction or block', options, selectAll: seed == null,
+      check: (v) => (boxKindFor(v, state.project) ? '' : `"${v}" is not an instruction or block. Choose one from the list.`),
+      done: (v, how) => { if (how !== 'blur' || boxKindFor(v, state.project)) convertEmpty(at, v) } })
+  }
   function edit0() {
-    const s = sel(); if (!s) return
-    if (s.gap) { openQuickAt(s.network, s.gap); return }
+    const s = sel(); if (!s || s.gap || s.paths) return
     if (s.branch) { const el = body.querySelector('.branch.sel'); if (el) { const r = el.getBoundingClientRect(); menu({ clientX: r.left, clientY: r.bottom }) } return }
-    const t = targetIn(state.project, s), first = t && operandFields(t)[0]
+    const t = targetIn(state.project, s)
+    if (t?.k === 'empty') { openBoxName(atOf(s)); return }
+    const first = t && operandFields(t)[0]
     if (first) startEdit(atOf(s), fieldName(first))
+  }
+  // Type-to-edit: with an instruction selected, a printable key opens its first operand (or the "??" name) seeded with it.
+  function typeInto(ch) {
+    const s = sel(); if (!s || s.gap || s.branch || s.paths) return false
+    const t = targetIn(state.project, s); if (!t) return false
+    if (t.k === 'empty') { openBoxName(atOf(s), ch); return !!activeInput }
+    const f = operandFields(t)[0]; if (!f) return false
+    startEdit(atOf(s), fieldName(f), ch)
+    return !!activeInput
+  }
+  async function defineTag(at, f, v) {
+    const t0 = targetIn(state.project, at)
+    const r = await defineTagDialog({ name: v, type: f.type ?? suggestedTagType(t0, f), block: block() })
+    if (!r) return
+    edit((p) => {
+      if (r.section === 'global') p.tags.push({ name: r.name, type: r.type, address: r.address, comment: r.comment })
+      else { const blk = p.blocks.find((x) => x.id === blockId); (blk.interface[r.section] = blk.interface[r.section] ?? []).push({ name: r.name, type: r.type, ...(r.comment ? { comment: r.comment } : {}) }) }
+      const t = targetIn(p, at)
+      if (t && r.name !== v) { if (f.pin) { t.args = t.args ?? {}; t.args[f.pin] = r.name } else t[f.field] = r.name }
+    })
+  }
+  async function renameTagAt(v) {
+    const n = await renameTagDialog(v)
+    if (n && n !== v) edit((p) => renameTag(p, v, n))
   }
 
   /* ------------------------------------------------------------ rendering -- */
@@ -589,27 +624,35 @@ export function mountLadder(host, tab) {
   function symbol(e, kind) {
     const s = lineSvg(44)
     if (kind === 'NO' || kind === 'NC') { s.append(ln(0, 13, 14, 13), ln(14, 3, 14, 23), ln(30, 3, 30, 23), ln(30, 13, 44, 13)); if (kind === 'NC') s.append(ln(11, 21, 33, 5)) }
-    else if (kind === 'P' || kind === 'N') { s.append(ln(0, 13, 10, 13), svg('rect', { x: 10, y: 3, width: 24, height: 20 }), svg('text', { x: 22, y: 18, 'text-anchor': 'middle' }, kind), ln(34, 13, 44, 13)) }
+    else if (kind === 'P' || kind === 'N') { s.append(ln(0, 13, 14, 13), ln(14, 3, 14, 23), ln(30, 3, 30, 23), ln(30, 13, 44, 13), svg('text', { x: 22, y: 17, 'text-anchor': 'middle' }, kind)) }
     else { // coils
       s.append(ln(0, 13, 8, 13), svg('path', { d: 'M15 3 Q7 13 15 23 M29 3 Q37 13 29 23' }), ln(36, 13, 44, 13))
       const lab = { set: 'S', reset: 'R', ncoil: '/' }[kind]; if (lab) s.append(svg('text', { x: 22, y: 18, 'text-anchor': 'middle' }, lab))
     }
     return s
   }
+  const fieldAt = (at, name) => { const t = targetIn(state.project, at); return t && operandFields(t).find((x) => fieldName(x) === name) }
+  /** An operand: <??.?> when missing (... when optional), the formatted name otherwise. Accepts a dragged tag. */
   const opSpan = (at, name, value, cls, fallback = '<??.?>') => {
     const unknown = classifyOperand(value, sc) === 'unknown'
-    return h('span', { class: `${cls}${value ? '' : ' empty'}${unknown ? ' unknown' : ''}`, dataset: { op: name }, title: unknown ? UNKNOWN_TIP : undefined,
-      // An empty operand opens on a single click (TIA invites entry straight away); a filled one needs a double-click so it is not edited by accident.
+    const span = h('span', { class: `${cls}${value ? '' : ' empty'}${unknown ? ' unknown' : ''}`, dataset: { op: name }, title: unknown ? UNKNOWN_TIP : undefined,
       onClick: (ev) => { if (!value && !ev.shiftKey) { ev.stopPropagation(); startEdit(at, name) } },
-      onDblclick: (ev) => { ev.stopPropagation(); startEdit(at, name) } }, value || fallback)
+      onDblclick: (ev) => { ev.stopPropagation(); startEdit(at, name) } }, value ? shown(value) : fallback)
+    span.addEventListener('dragover', (ev) => { if (dragging.payload?.tag) { ev.preventDefault(); ev.stopPropagation(); span.classList.add('drop-op') } })
+    span.addEventListener('dragleave', () => span.classList.remove('drop-op'))
+    span.addEventListener('drop', (ev) => {
+      let tag = dragging.payload?.tag
+      if (!tag) { try { tag = JSON.parse(ev.dataTransfer.getData('text/plain')).tag } catch { /* not a tag */ } }
+      if (!tag) return
+      ev.preventDefault(); ev.stopPropagation(); span.classList.remove('drop-op'); dragging.payload = null
+      const f = fieldAt(at, name); if (f) setField(at, f, tag)
+    })
+    return span
   }
-  function elementNode(e, path, ni, ctx) {
-    const k = key(path), at = { network: ni, path }, op = (name, value, cls, fallback) => opSpan(at, name, value, cls, fallback)
-    const node = h('div', { class: 'el sym-el', dataset: { path: k }, style: { marginTop: '21px' } })
-    const onSel = (ev) => { ev.stopPropagation(); if (ev.shiftKey) toggleInSelection(ni, k); else setSel({ network: ni, path }) }
-    node.addEventListener('mousedown', onSel)
+  function makeDraggable(node, ni, path, k) {
     node.setAttribute('draggable', 'true')
     node.addEventListener('dragstart', (ev) => {
+      if (ev.target.closest?.('.op-edit')) return
       ev.stopPropagation()
       moveDrag = { network: ni, path }
       setSel({ network: ni, path })
@@ -618,47 +661,78 @@ export function mountLadder(host, tab) {
       node.classList.add('moving')
     })
     node.addEventListener('dragend', () => { node.classList.remove('moving'); moveDrag = null; clearDrag() })
+  }
+  /** Instruction box in the engineering-tool layout: instance above, title, EN/ENO (or IN/Q) on the rung row,
+   *  input operands outside on the left, output operands outside on the right. */
+  function boxGrid({ title, titleAttrs = {}, flowIn = 'EN', flowOut = 'ENO', rows = [] }) {
+    const grid = h('div', { class: 'tbox' })
+    const row = (cls, l, mid, r) => grid.append(h('div', { class: `tb-l ${cls}` }, l), h('div', { class: `tb-mid ${cls}` }, mid), h('div', { class: `tb-r ${cls}` }, r))
+    row('tb-head', null, h('span', { class: 'tb-title', ...titleAttrs }, title), null)
+    row(`tb-flow${rows.length ? '' : ' tb-last'}`, null, [h('span', { class: 'pn' }, flowIn), h('span', { class: 'pn r' }, flowOut)], null)
+    rows.forEach((r, i) => row(`${i === rows.length - 1 ? 'tb-last' : ''}${r.l ? ' stub-l' : ''}${r.r ? ' stub-r' : ''}`, r.lop ?? null, [h('span', { class: 'pn' }, r.l ?? ''), h('span', { class: 'pn r' }, r.r ?? '')], r.rop ?? null))
+    return grid
+  }
+  function elementNode(e, path, ni, ctx) {
+    const k = key(path), at = { network: ni, path }, op = (name, value, cls, fallback) => opSpan(at, name, value, cls, fallback)
+    const node = h('div', { class: 'el', dataset: { path: k } })
+    const onSel = (ev) => { ev.stopPropagation(); if (ev.shiftKey) toggleInSelection(ni, k); else setSel({ network: ni, path }) }
+    node.addEventListener('mousedown', onSel)
+    makeDraggable(node, ni, path, k)
     if (e.k === 'NO' || e.k === 'NC' || e.k === 'P' || e.k === 'N') {
-      node.append(h('span', { class: 'val' }), op('tag', e.tag, 'tagname'), symbol(e, e.k), h('span', { class: 'addr' }, addrOf(e.tag)))
-      node.title = e.k === 'NO' ? 'Normally open contact' : e.k === 'NC' ? 'Normally closed contact' : e.k === 'P' ? 'Positive signal edge' : 'Negative signal edge'
+      node.classList.add('sym-el')
+      node.append(h('span', { class: 'val' }), h('span', { class: 'addr' }, addrOf(e.tag)), op('tag', e.tag, 'tagname'), symbol(e, e.k))
+      node.title = { NO: 'Normally open contact', NC: 'Normally closed contact', P: 'Scan operand for positive signal edge', N: 'Scan operand for negative signal edge' }[e.k]
     } else if (e.k === 'cmp') {
-      node.style.marginTop = '21px'
-      const sel2 = h('select', { class: 'in', style: { width: '50px' }, onChange: (ev) => edit((p) => { const t = targetIn(p, at); if (t) t.op = ev.target.value }, `op:${blockId}:${k}:op`) }, COMPARE.map((o) => h('option', { value: o, selected: o === e.op }, o)))
-      const a = op('a', e.a, 'pv'), b = op('b', e.b, 'pv')
-      node.append(h('div', { class: 'box', style: { minWidth: '84px' } }, h('div', { class: 'bh' }, 'CMP'), h('div', { class: 'pin' }, a), h('div', { class: 'bi' }, sel2), h('div', { class: 'pin' }, b)))
+      node.classList.add('box-el', 'cmp-el')
+      const sel2 = h('select', { class: 'in', onMousedown: (ev) => ev.stopPropagation(), onChange: (ev) => edit((p) => { const t = targetIn(p, at); if (t) t.op = ev.target.value }, `op:${blockId}:${k}:op`) }, COMPARE.map((o) => h('option', { value: o, selected: o === e.op }, o)))
+      node.append(op('a', e.a, 'pv cmp-op'), h('div', { class: 'cmp-box' }, h('div', { class: 'cmp-title' }, 'CMP'), sel2), op('b', e.b, 'pv cmp-op'))
+      node.title = 'Compare'
     } else if (e.k === 'move' || e.k === 'math') {
-      // The result's live value (online) sits next to OUT.
-      const pins = operandFields(e).map((f) => h('div', { class: 'pin' }, h('span', null, f.label), f.field === 'dest' ? h('span', { class: 'pin-r' }, h('span', { class: 'dval' }), op('dest', e.dest, 'pv')) : op(f.field, e[f.field], 'pv')))
-      node.append(h('div', { class: 'box' }, h('div', { class: 'bh' }, e.k === 'move' ? 'MOVE' : MATH_OPS[e.op] ?? 'MATH'), ...pins))
+      node.classList.add('box-el')
+      const ins = operandFields(e).filter((f) => f.field !== 'dest'), out = { l: null, r: 'OUT', rop: h('span', { class: 'outv' }, op('dest', e.dest, 'pv'), h('span', { class: 'dval' })) }
+      const rows = ins.map((f, i) => ({ l: e.k === 'move' ? 'IN' : f.label, lop: op(f.field, e[f.field], 'pv'), ...(i === 0 ? { r: out.r, rop: out.rop } : {}) }))
+      node.append(h('div', { class: 'tb-top' }), boxGrid({ title: e.k === 'move' ? 'MOVE' : MATH_OPS[e.op] ?? 'MATH', rows }))
     } else if (e.k === 'box') {
-      const def = FB[e.fb]
-      const pins = Object.entries(def.in).filter(([p]) => p !== def.flowIn)
-      const outs = Object.keys(def.out)
-      const inst = h('span', { class: 'tagname inst', title: 'Double-click to rename' }, e.inst ?? '')
+      node.classList.add('box-el')
+      const def = FB[e.fb], ins = operandFields(e), outs = Object.keys(def.out).filter((p) => p !== def.flowOut)
+      const inst = h('span', { class: 'tagname inst', title: 'Double-click to rename the instance' }, instShown(e.inst, false))
       inst.addEventListener('dblclick', (ev) => { ev.stopPropagation(); editInstName(inst, at, e.inst) })
-      node.append(inst, h('div', { class: 'box', 'data-flow': 'box' },
-        h('div', { class: 'bh' }, def.label),
-        h('div', { class: 'pin' }, h('span', null, def.flowIn), h('span', { class: 'live', dataset: { out: def.flowOut } }, def.flowOut)),
-        ...pins.map(([pin, kindp], idx) => h('div', { class: 'pin' }, h('span', null, pin), op(pin, e.args?.[pin], 'pv', DEFAULT_PIN[kindp]), idx === 0 && outs[1] ? h('span', { class: 'live ov', dataset: { out: outs[1] } }, '') : null))))
-      node.style.marginTop = '0'
+      const n = Math.max(ins.length, outs.length)
+      const rows = Array.from({ length: n }, (_, i) => ({ l: ins[i]?.pin ?? null, lop: ins[i] ? op(ins[i].pin, e.args?.[ins[i].pin], 'pv', ins[i].optional ? '...' : '<??.?>') : null, r: outs[i] ?? null, rop: outs[i] ? h('span', { class: 'live', dataset: { live: `${e.inst}.${outs[i]}` } }, '...') : null }))
+      node.append(h('div', { class: 'tb-top' }, h('span', { class: 'addr' }), inst), boxGrid({ title: def.label, flowIn: def.flowIn, flowOut: def.flowOut, titleAttrs: { title: def.title }, rows }))
+    } else if (e.k === 'call') {
+      node.classList.add('box-el', 'call-el')
+      const callee = state.project.blocks.find((b) => isCallee(b) && b.name === e.block)
+      const db = !e.multi && e.inst ? state.project.blocks.find((b) => b.kind === 'DB' && b.name === e.inst) : null
+      const fields = operandFields(e), ins = fields.filter((f) => f.dir !== 'out'), outs = fields.filter((f) => f.dir === 'out')
+      const n = Math.max(ins.length, outs.length)
+      const rows = Array.from({ length: n }, (_, i) => ({
+        l: ins[i]?.pin ?? null, lop: ins[i] ? op(ins[i].pin, e.args?.[ins[i].pin], 'pv', ins[i].optional ? '...' : '<??.?>') : null,
+        r: outs[i]?.pin ?? null, rop: outs[i] ? op(outs[i].pin, e.args?.[outs[i].pin], 'pv', outs[i].optional ? '...' : '<??.?>') : null,
+      }))
+      node.append(h('div', { class: 'tb-top' }, h('span', { class: 'addr' }, db ? `%DB${db.number}` : ''), h('span', { class: 'tagname inst' }, e.inst ? instShown(e.inst, !e.multi) : '')),
+        boxGrid({ title: e.block, titleAttrs: { title: callee ? `${callee.kind}${callee.number} ${callee.name}` : `${e.block} does not exist` }, rows }))
+      if (!callee) node.classList.add('missing')
+      node.title = callee ? `Call of ${callee.kind === 'FB' ? 'function block' : 'function'} ${callee.name}` : `Block ${e.block} does not exist`
+    } else if (e.k === 'empty') {
+      node.classList.add('box-el', 'empty-el')
+      const name = h('span', { class: 'tb-name', dataset: { boxname: '1' }, title: 'Click and type an instruction (TON, MOVE, CMP ==, ADD …) or the name of an FB or FC',
+        onClick: (ev) => { ev.stopPropagation(); openBoxName(at) } }, '??')
+      node.append(h('div', { class: 'tb-top' }), boxGrid({ title: name, rows: [] }))
     }
     ctx.els.set(k, node)
     node.addEventListener('contextmenu', (ev) => { ev.preventDefault(); ev.stopPropagation(); const cur = sel(); if (!(cur?.paths && cur.paths.includes(k))) setSel({ network: ni, path }); menu(ev) })
     return node
   }
   function wire(flowKey, ctx, grow = false, gap = null, empty = false) {
-    const label = 'Add an instruction here'
-    const plus = gap ? h('button', { type: 'button', class: empty ? 'gap-plus pill' : 'gap-plus', tabindex: '-1', 'aria-label': label, title: label, onClick: (e) => { e.stopPropagation(); openQuickAt(ctx.ni, gap) } }, empty ? '+ Add instruction' : '+') : null
-    // While a parallel path is open, the wires where it may join are marked (green, wider) so they are easy to hit.
+    // While a branch is open, the connections where it may close are marked so they are easy to hit.
     const join = !!(gap && ctx.join && canDropBranchEnd(ctx.net, ctx.join, gap))
-    if (join && plus) plus.title = 'Join the parallel path here (or add an instruction)'
-    const w = h('div', { class: `wire${grow ? ' grow' : ''}${gap ? ' wire-slot' : ''}${empty ? ' empty-slot' : ''}${join ? ' join-target' : ''}`, style: { marginTop: '49px' }, ...(gap ? { role: 'group', tabindex: '0', 'aria-label': label, title: join ? 'Join the parallel path here' : label, dataset: { gap: JSON.stringify(gap) } } : {}) }, plus)
+    const w = h('div', { class: `wire${grow ? ' grow' : ''}${gap ? ' wire-slot' : ''}${empty ? ' empty-slot' : ''}${join ? ' join-target' : ''}`, ...(gap ? { role: 'button', tabindex: '0', 'aria-label': 'Connection', title: join ? 'Close the branch here (Shift+F9)' : 'Connection: select it, then insert an instruction', dataset: { gap: JSON.stringify(gap) } } : {}) }, gap ? h('span', { class: 'drop-mark' }) : null)
     if (gap) {
-      const selectGap = e => { e.stopPropagation(); setSel({ network: ctx.ni, gap }) }
+      const selectGap = (e) => { e.stopPropagation(); setSel({ network: ctx.ni, gap }) }
       w.addEventListener('mousedown', selectGap)
       w.addEventListener('focus', () => setSel({ network: ctx.ni, gap }))
-      w.addEventListener('keydown', (e) => { if (e.key === ' ' && e.target === w) { e.preventDefault(); openQuickAt(ctx.ni, gap) } })
-      w.addEventListener('contextmenu', e => { e.preventDefault(); selectGap(e); menu(e) })
+      w.addEventListener('contextmenu', (e) => { e.preventDefault(); selectGap(e); menu(e) })
     }
     ctx.wires.push({ el: w, key: flowKey }); return w
   }
@@ -679,10 +753,10 @@ export function mountLadder(host, tab) {
   function branchEnd(path, ni, lanePath, count) {
     const handle = h('button', {
       type: 'button', class: 'branch-end', draggable: 'true',
-      'aria-label': 'Join the parallel path', title: 'Drag this to a highlighted wire to join the two paths',
+      'aria-label': 'Close branch', title: 'Drag the arrow onto the rung where the branch should close (or press Shift+F9)',
       onMousedown: ev => ev.stopPropagation(),
       onClick: () => setSel({ network: ni, gap: { path: lanePath, index: count } }),
-    }, 'Drag to join')
+    }, svg('svg', { viewBox: '0 0 12 16', width: 12, height: 16 }, svg('path', { d: 'M6 15V2M2 6l4-4 4 4', fill: 'none', stroke: 'currentColor', 'stroke-width': 1.8 })))
     handle.addEventListener('dragstart', ev => {
       branchDrag = { network: ni }
       ev.dataTransfer.effectAllowed = 'link'
@@ -712,25 +786,24 @@ export function mountLadder(host, tab) {
     return wrap
   }
   function coilNode(c, i, ni, ctx) {
-    const node = h('div', { class: 'el sym-el', dataset: { path: `c${i}` }, style: { marginTop: '21px' } })
-    node.append(opSpan({ network: ni, coil: i }, 'tag', c.tag, 'tagname'), symbol(c, c.k), h('span', { class: 'addr' }, addrOf(c.tag)))
+    const node = h('div', { class: 'el sym-el', dataset: { path: `c${i}` } })
+    node.append(h('span', { class: 'addr' }, addrOf(c.tag)), opSpan({ network: ni, coil: i }, 'tag', c.tag, 'tagname'), symbol(c, c.k))
     node.addEventListener('mousedown', (ev) => { ev.stopPropagation(); setSel({ network: ni, coil: i }) })
     node.addEventListener('contextmenu', (ev) => { ev.preventDefault(); ev.stopPropagation(); setSel({ network: ni, coil: i }); menu(ev) })
     ctx.els.set(`c${i}`, node)
-    node.title = { coil: 'Output coil', ncoil: 'Negated output', set: 'Set output', reset: 'Reset output' }[c.k]
+    node.title = { coil: 'Assignment', ncoil: 'Negate assignment', set: 'Set output', reset: 'Reset output' }[c.k]
     return node
   }
   function nearestSlot(netEl, ev, only = '') {
     let best = null, bd = Infinity
     for (const slot of netEl.querySelectorAll(`.wire-slot${only}`)) {
-      if (!slot.querySelector(':scope > .gap-plus')) continue
       const r = slot.getBoundingClientRect(), d = Math.hypot(Math.max(r.left - ev.clientX, 0, ev.clientX - r.right), ev.clientY - r.top)
       if (d < bd) { bd = d; best = slot }
     }
     return best
   }
-  function clearDrag() { setNear(null); root.classList.remove('dragging'); root.querySelectorAll('.out-col.drop-over').forEach((x) => x.classList.remove('drop-over')) }
-  const onDragStart = (e) => { try { palDrag = e.target.closest?.('.pal-item, .fav') ?JSON.parse(e.dataTransfer.getData('text/plain')) : null } catch { palDrag = null } }
+  function clearDrag() { setNear(null); root.classList.remove('dragging'); root.querySelectorAll('.out-col.drop-over, .drop-op').forEach((x) => x.classList.remove('drop-over', 'drop-op')) }
+  const onDragStart = (e) => { try { palDrag = e.target.closest?.('.pal-item, .fav') ? JSON.parse(e.dataTransfer.getData('text/plain')) : null } catch { palDrag = null } }
   const onDragEnd = () => { palDrag = null; moveDrag = null; clearDrag() }
   function network(net, ni) {
     const ctx = { wires: [], els: new Map(), ni, net, join: openBranches(net).at(-1) }
@@ -738,46 +811,40 @@ export function mountLadder(host, tab) {
     const main = series(net.elements, [], ni, ctx, 'S', true)
     body2.append(h('div', { class: 'rail' }), main)
     const coils = h('div', { class: 'coils', style: { position: 'relative' } })
-    if (net.coils.length) {
-      net.coils.forEach((c, i) => {
-        const cls = net.coils.length === 1 ? 'first last' : i === 0 ? 'first' : i === net.coils.length - 1 ? 'last' : 'mid'
-        const lane = h('div', { class: `coilrow lane ${cls}`, style: { position: 'relative', paddingBottom: '8px' } }, h('div', { class: 'lbar l', dataset: { f: 'OUT' } }), wire('OUT', ctx), coilNode(c, i, ni, ctx), wire(`k${i}`, ctx))
-        coils.append(lane)
-      })
-    }
-    else coils.append(h('div', { class: 'coilrow ghost-row' }, h('div', { class: 'wire', style: { marginTop: '49px' } }), h('button', { type: 'button', class: 'ghost-coil', title: 'Add an output coil', 'aria-label': 'Add output', onClick: () => insert('coil', { network: ni }) }, h('span', { class: 'gname' }, 'Add output'), symbol(null, 'coil')), h('div', { class: 'wire', style: { marginTop: '49px' } })))
-    if (net.coils.length) coils.append(h('div', { class: 'coil-add' }, h('button', { type: 'button', class: 'gap-plus coil-plus', tabindex: '-1', title: 'Add another output', 'aria-label': 'Add another output', onClick: (e) => { e.stopPropagation(); insert('coil', { network: ni, coil: net.coils.length - 1 }) } }, '+')))
-    const outCol = h('div', { class: 'out-col' }, coils, h('div', { class: 'end' }))
+    net.coils.forEach((c, i) => {
+      const cls = net.coils.length === 1 ? 'first last' : i === 0 ? 'first' : i === net.coils.length - 1 ? 'last' : 'mid'
+      coils.append(h('div', { class: `coilrow lane ${cls}`, style: { position: 'relative', paddingBottom: '8px' } }, h('div', { class: 'lbar l', dataset: { f: 'OUT' } }), wire('OUT', ctx), coilNode(c, i, ni, ctx), wire(`k${i}`, ctx)))
+    })
+    const outCol = h('div', { class: 'out-col' }, coils)
     body2.append(outCol)
     const scroller = h('div', { class: 'net-scroll' }, body2,
       h('button', { type: 'button', class: 'scroll-btn l', tabindex: '-1', 'aria-label': 'Scroll left', title: 'Scroll left', onClick: () => body2.scrollBy({ left: -300, behavior: 'smooth' }) }, '‹'),
       h('button', { type: 'button', class: 'scroll-btn r', tabindex: '-1', 'aria-label': 'Scroll right', title: 'Scroll right', onClick: () => body2.scrollBy({ left: 300, behavior: 'smooth' }) }, '›'))
     trackScroll(scroller, body2, outCol, main)
     const collapsed = net.collapsed
-    const title = h('input', { class: 'ntitle', value: net.title ?? '', placeholder: 'Title…', onInput: (ev) => edit((p) => { p.blocks.find((x) => x.id === blockId).networks[ni].title = ev.target.value }, `nt:${net.id}`), onMousedown: (ev) => ev.stopPropagation() })
-    const comment = h('input', { class: 'net-comment', value: net.comment ?? '', placeholder: 'Comment…', onInput: (ev) => edit((p) => { p.blocks.find((x) => x.id === blockId).networks[ni].comment = ev.target.value }, `nc:${net.id}`), onMousedown: (ev) => ev.stopPropagation() })
-    const issues = validateLadderNetwork(net), open = openBranches(net).length > 0
+    const title = h('input', { class: 'ntitle', value: net.title ?? '', placeholder: '', 'aria-label': `Title of network ${ni + 1}`, onInput: (ev) => edit((p) => { p.blocks.find((x) => x.id === blockId).networks[ni].title = ev.target.value }, `nt:${net.id}`), onMousedown: (ev) => ev.stopPropagation() })
+    const comment = h('input', { class: 'net-comment', value: net.comment ?? '', placeholder: 'Comment', 'aria-label': `Comment of network ${ni + 1}`, onInput: (ev) => edit((p) => { p.blocks.find((x) => x.id === blockId).networks[ni].comment = ev.target.value }, `nc:${net.id}`), onMousedown: (ev) => ev.stopPropagation() })
+    const issues = validateLadderNetwork(net)
     const el = h('div', { class: `net${issues.length ? ' unfinished' : ''}`, dataset: { ni } },
-      h('div', { class: 'net-head' }, h('span', { class: 'tw', onClick: () => edit((p) => { const n = p.blocks.find((x) => x.id === blockId).networks[ni]; n.collapsed = !n.collapsed }) }, collapsed ? '▶' : '▼'), `Network ${ni + 1}:`, title,
-        h('button', { type: 'button', class: 'rung-add', title: 'Insert a blank network below this one', onMousedown: e => e.stopPropagation(), onClick: () => { setSel({ network: ni }); insertNetwork(true) } }, 'Insert network')),
-      issues.length ? h('div', { class: 'rung-warning', role: 'status' }, issues.map(i => h('div', null, i.message))) : null,
-      collapsed ? null : [comment, scroller,
-        net.elements.length > 10 ? h('div', { class: 'rung-tip' }, 'Tip: long rungs are hard to read. Split the logic over two networks with a memory bit.') : null,
-        open ? h('div', { class: 'branch-actions' }, h('span', null, 'This parallel path is not joined yet. Drag its end towards a green wire (it snaps to the nearest one), or click a green + and close it there.'), h('button', { type: 'button', class: 'btn', onMousedown: e => e.stopPropagation(), onClick: () => { if (sel()?.network !== ni) setSel({ network: ni }); insert('closeBranch') } }, 'Close the parallel path · Shift+F9')) : null])
+      h('div', { class: 'net-head' }, h('span', { class: 'tw', onClick: () => edit((p) => { const n = p.blocks.find((x) => x.id === blockId).networks[ni]; n.collapsed = !n.collapsed }) }, collapsed ? '▶' : '▼'),
+        issues.length ? h('span', { class: 'net-err', role: 'img', 'aria-label': 'Network has errors', title: issues.map((i) => i.message).join('\n') }, '!') : null,
+        h('span', { class: 'nlabel' }, `Network ${ni + 1}:`), title),
+      collapsed ? null : [comment, scroller])
     el.addEventListener('mousedown', () => setSel({ network: ni }))
-    body2.addEventListener('mousedown', (ev) => { if (ev.button === 0 && ev.target.closest('.net-body') === body2 && !ev.target.closest('.el, .wire-slot, .gap-plus, .branch, .branch-end, .lbar, input, select, button, textarea')) startMarquee(ev, ni) })
+    body2.addEventListener('mousedown', (ev) => { if (ev.button === 0 && !ev.target.closest('.el, .wire-slot, .branch, .branch-end, .lbar, input, select, button, textarea')) startMarquee(ev, ni) })
     el.addEventListener('contextmenu', (ev) => { ev.preventDefault(); if (sel()?.network !== ni && !sel()?.paths) setSel({ network: ni }); menu(ev) })
     el.addEventListener('dragover', (ev) => {
       if (branchDrag) {
-        // Snap to the nearest wire where the path may join, wherever the pointer is in this network.
+        // Snap to the nearest connection where the branch may close, wherever the pointer is in this network.
         const slot = branchDrag.network === ni ? nearestSlot(el, ev, '.join-target') : null
         el.querySelectorAll('.join-near').forEach((x) => x !== slot && x.classList.remove('join-near'))
         if (slot) { slot.classList.add('join-near'); ev.preventDefault(); ev.dataTransfer.dropEffect = 'link' }
         return
       }
       if (moveDrag && moveDrag.network !== ni) { ev.dataTransfer.dropEffect = 'none'; return }   // moves stay in one network
+      if (dragging.payload?.tag) { ev.preventDefault(); return }   // a tag lands on an operand, not on the rung
       ev.preventDefault()
-      // A coil lands in the output column; everything else on the wire nearest the pointer.
+      // A coil lands in the output column; everything else on the connection nearest the pointer.
       const coil = !!palDrag?.lad?.coil
       outCol.classList.toggle('drop-over', coil); root.classList.toggle('dragging', !coil)
       setNear(coil ? null : nearestSlot(el, ev))
@@ -798,38 +865,43 @@ export function mountLadder(host, tab) {
         if (md.network === ni) { const slot = nearestSlot(el, ev); if (slot) moveElement(md, JSON.parse(slot.dataset.gap)) }
         return
       }
-      try {
-        const p = JSON.parse(ev.dataTransfer.getData('text/plain')); if (!p.lad) return
-        const slot = nearestSlot(el, ev)
-        dropPayload(p.lad, { network: ni, ...(slot && !p.lad.coil ? { gap: JSON.parse(slot.dataset.gap) } : {}) })
-      } catch { /* not ours */ }
+      let p = null
+      try { p = JSON.parse(ev.dataTransfer.getData('text/plain')) } catch { /* not ours */ }
+      p = p ?? dragging.payload
+      dragging.payload = null
+      if (!p) return
+      const slot = nearestSlot(el, ev), at = { network: ni, ...(slot ? { gap: JSON.parse(slot.dataset.gap) } : {}) }
+      if (p.block) { insertCall(p.block, at); return }
+      if (p.tag) { toast('Drop the tag onto an operand (<??.?>) of an instruction.'); return }
+      if (p.lad) dropPayload(p.lad, p.lad.coil ? { network: ni } : at)
     })
     refs.nets.set(ni, { el, ctx })
     return el
   }
 
+  /* ------------------------------------------------------- context menu -- */
   function menu(ev) {
-    const s = sel(), ni = s?.network, st = block().networks[ni] ? railState(ni, s.gap) : { unfinished: false, canClose: false }, inBranch = !!containingBranch(s)
+    const s = sel(), ni = s?.network, st = block().networks[ni] ? railState(ni, s.gap) : { unfinished: false, canClose: false }
     const ins = (label, kind, keys) => ({ label, keys, run: () => insert(kind) })
-    if (s?.paths) {   // a multi-selection: offer only the group actions
-      contextMenu(ev.clientX, ev.clientY, [
-        { label: `Open parallel branch around selection (${s.paths.length})`, run: branchAround },
-        '-', { label: `Copy (${s.paths.length})`, keys: 'Ctrl+C', run: copy }, { label: `Cut (${s.paths.length})`, keys: 'Ctrl+X', run: cut },
-        '-', { label: `Delete (${s.paths.length})`, keys: 'Delete', run: remove },
-      ])
+    const clipName = { network: 'Paste', element: 'Paste', coil: 'Paste', elements: 'Paste' }[state.clipboard?.kind]
+    const edits = [{ label: 'Cut', keys: 'Ctrl+X', run: cut }, { label: 'Copy', keys: 'Ctrl+C', run: copy }, { label: 'Paste', keys: 'Ctrl+V', run: paste, disabled: !clipName }, { label: 'Delete', keys: 'Del', run: remove }]
+    if (s?.paths) {
+      contextMenu(ev.clientX, ev.clientY, [...edits, '-', { label: 'Open branch around selection', run: branchAround }, '-', { label: 'Insert network', keys: 'Ctrl+R', run: () => insertNetwork(true) }])
       return
     }
-    const paths = [st.unfinished ? null : ins('Start a parallel path (OR)', 'branch', 'Shift+F8'), inBranch ? ins('Add another parallel path', 'addPath') : null, inBranch ? ins('Remove parallel path (keep the top path)', 'removeBranch') : null].filter(Boolean)
-    contextMenu(ev.clientX, ev.clientY, [
-      st.canClose ? ins('Close the parallel path here', 'closeBranch', 'Shift+F9') : null,
-      ins('Insert normally open contact', 'NO', 'Shift+F2'), ins('Insert normally closed contact', 'NC', 'Shift+F3'), ins('Insert output coil', 'coil', 'Shift+F7'),
-      ins('Insert set coil (S)', 'set', 'Shift+F4'), ins('Insert reset coil (R)', 'reset', 'Shift+F6'), ins('Insert on-delay timer (TON)', 'box:TON'), ins('Insert up counter (CTU)', 'box:CTU'), ins('Insert comparison', 'cmp', 'Shift+F10'),
-      { label: 'More instructions…', keys: 'Shift+F5', run: chooseBox },
-      ...(paths.length ? ['-', ...paths] : []),
-      '-', { label: 'Insert network below', keys: 'Ctrl+R', run: () => insertNetwork(true) }, { label: 'Insert network above', run: () => insertNetwork(false) },
-      '-', { label: 'Cut', keys: 'Ctrl+X', run: cut }, { label: 'Copy', keys: 'Ctrl+C', run: copy }, { label: { network: 'Paste network', element: 'Paste instruction', coil: 'Paste coil' }[state.clipboard?.kind] ?? 'Paste', keys: 'Ctrl+V', run: paste, disabled: !['network', 'element', 'coil'].includes(state.clipboard?.kind) },
-      '-', { label: 'Delete', keys: 'Delete', run: remove },
-    ].filter(Boolean))
+    // Tag actions for the operand under the pointer (or the first operand of the selected instruction).
+    const t = s && !s.gap && !s.branch ? targetIn(state.project, s) : null
+    const opName = ev.target?.closest?.('[data-op]')?.dataset.op ?? (t && operandFields(t)[0] ? fieldName(operandFields(t)[0]) : null)
+    const f = t && opName ? operandFields(t).find((x) => fieldName(x) === opName) : null
+    const v = t && f ? valueOf(t, f) : ''
+    const kind = v ? classifyOperand(v, scope()) : 'empty'
+    const tags = []
+    if (f && kind === 'unknown' && IDENT.test(v)) tags.push({ label: 'Define tag…', run: () => defineTag(atOf(s), f, v) })
+    if (f && kind === 'tag') tags.push({ label: 'Rename tag…', run: () => renameTagAt(v) })
+    if (f) tags.push({ label: 'Rewire tag…', run: () => startEdit(atOf(s), opName) })
+    if (t?.k === 'box' && t.inst) tags.push({ label: 'Rename instance…', run: () => { const span = body.querySelector('.el.sel .inst'); if (span) editInstName(span, atOf(s), t.inst) } })
+    const branch = [st.canClose ? ins('Close branch', 'closeBranch', 'Shift+F9') : null, st.unfinished ? null : ins('Open branch', 'branch', 'Shift+F8'), s?.branch ? ins('Insert parallel path', 'addPath') : null].filter(Boolean)
+    contextMenu(ev.clientX, ev.clientY, [...edits, ...(tags.length ? ['-', ...tags] : []), '-', { label: 'Insert network', keys: 'Ctrl+R', run: () => insertNetwork(true) }, ...(branch.length ? ['-', ...branch] : [])])
   }
 
   /* ------------------------------------------------------------ monitoring -- */
@@ -849,22 +921,24 @@ export function mountLadder(host, tab) {
         else if (e.k === 'P' || e.k === 'N') flow = flow && !!val(`${e.inst}.Q`)
         else if (e.k === 'cmp') { const a = val(e.a), b = val(e.b); flow = flow && a !== undefined && b !== undefined && ({ '==': a === b, '<>': a !== b, '>': a > b, '>=': a >= b, '<': a < b, '<=': a <= b })[e.op] }
         else if (e.k === 'box') flow = !!val(`${e.inst}.${FB[e.fb].flowOut}`)
-        map.set(k, flow)
+        else if (e.k === 'empty') flow = undefined
+        map.set(k, flow)   // a call, MOVE or math box passes EN on as ENO
       } else map.set(k, undefined)
     })
     return flow
   }
+  const fmtLive = (x) => (x === undefined ? '' : typeof x === 'boolean' ? (x ? 'TRUE' : 'FALSE') : typeof x === 'number' && x > 1e6 ? `${(x / 1e6).toFixed(0)}ms` : String(x))
   function paint() {
     if (!block()) return
     const live = isOnline() && state.monitor !== false
     for (const [ni, { el, ctx }] of refs.nets) {
       const complete = live && !validateLadderNetwork(block().networks[ni]).length
       el.classList.toggle('mon', complete)
-      if (!complete) { for (const w of ctx.wires) w.el.classList.remove('t', 'f'); for (const n of ctx.els.values()) { n.classList.remove('t', 'f'); n.querySelector('.val')?.replaceChildren(); n.querySelectorAll('.live.ov, .dval').forEach((x) => { x.textContent = '' }) } el.querySelectorAll('.lbar').forEach((x) => x.classList.remove('t')); continue }
+      if (!complete) { for (const w of ctx.wires) w.el.classList.remove('t', 'f'); for (const n of ctx.els.values()) { n.classList.remove('t', 'f'); n.querySelector('.val')?.replaceChildren(); n.querySelectorAll('[data-live]').forEach((x) => { x.textContent = '...' }); n.querySelectorAll('.dval').forEach((x) => { x.textContent = '' }) } el.querySelectorAll('.lbar').forEach((x) => x.classList.remove('t')); continue }
       const net = block().networks[ni], map = new Map()
       const out = evalSeries(net.elements, [], true, map)
       map.set('S', true); map.set('OUT', out)
-      net.coils.forEach((c, i) => { const v = out === true ? (c.k === 'ncoil' ? false : c.k === 'set' || c.k === 'reset' ? undefined : true) : (c.k === 'ncoil' ? true : false); map.set(`k${i}`, c.k === 'set' || c.k === 'reset' ? out : v === undefined ? out : c.k === 'ncoil' ? !out : out) })
+      net.coils.forEach((c, i) => map.set(`k${i}`, c.k === 'ncoil' ? !out : out))
       for (const w of ctx.wires) { const v = map.get(w.key); w.el.classList.toggle('t', v === true); w.el.classList.toggle('f', v === false) }
       el.querySelectorAll('.lbar').forEach((b) => { const v = map.get(b.dataset.f); b.classList.toggle('t', v === true) })
       const walk = (list, base) => list.forEach((e, i) => {
@@ -873,26 +947,23 @@ export function mountLadder(host, tab) {
         else if (n) {
           const v = map.get(key(p))
           n.classList.toggle('t', v === true); n.classList.toggle('f', v !== true)
-          if (e.k === 'box') { const def = FB[e.fb]; n.querySelectorAll('.live').forEach((sp) => { const pin = sp.dataset.out; const x = val(`${e.inst}.${pin}`); sp.textContent = sp.classList.contains('ov') ? `${pin}=${fmt(x)}` : `${pin}${typeof x === 'boolean' ? (x ? ' ■' : ' □') : ''}`; void def }) }
-          if (['NO', 'NC', 'P', 'N'].includes(e.k)) n.querySelector('.val').textContent = ''
-          if (e.k === 'move' || e.k === 'math') { const x = val(e.dest); n.querySelector('.dval').textContent = x === undefined ? '' : `= ${x}` }
+          n.querySelectorAll('[data-live]').forEach((sp) => { sp.textContent = fmtLive(val(sp.dataset.live)) || '...' })
+          if (e.k === 'move' || e.k === 'math') { const x = val(e.dest); const d = n.querySelector('.dval'); if (d) d.textContent = x === undefined ? '' : `= ${x}` }
         }
       })
       walk(net.elements, [])
       net.coils.forEach((c, i) => { const n = ctx.els.get(`c${i}`); if (!n) return; const x = val(c.tag); n.classList.toggle('t', x === true); n.classList.toggle('f', x === false) })
     }
   }
-  const fmt = (x) => (typeof x === 'number' && x > 1e6 ? `${(x / 1e6).toFixed(0)}ms` : x)
 
   /* -------------------------------------------------------------- render -- */
   function render() {
     const b = block(); if (!b) return
     const scroll = body.scrollTop, hscroll = new Map([...refs.nets].map(([i, r]) => [i, r.el.querySelector('.net-body')?.scrollLeft ?? 0]))
-    closeQuick(); closeBubble(); activeInput?.cancel(); ro.disconnect(); sc = scope()
+    activeInput?.cancel(); ro.disconnect(); sc = scope()
     root.replaceChildren()
     refs.nets.clear()
-    b.networks.forEach((n, i) => root.append(netGap(i), network(n, i)))
-    root.append(h('button', { type: 'button', class: 'add-network', onClick: () => insertNetwork(true, true) }, 'Add network at end'), h('div', { class: 'insert-hint' }, 'Move the mouse along a rung and click + to add an instruction.'))
+    b.networks.forEach((n, i) => root.append(network(n, i)))
     root.style.zoom = zoom
     body.scrollTop = scroll
     hscroll.forEach((x, i) => { const nb = refs.nets.get(i)?.el.querySelector('.net-body'); if (nb) nb.scrollLeft = x })
@@ -907,10 +978,10 @@ export function mountLadder(host, tab) {
     if (s.paths) { for (const k of s.paths) r.ctx.els.get(k)?.classList.add('sel'); return }
     const el = s.coil !== undefined ? r.ctx.els.get(`c${s.coil}`) : s.path?.length % 2 ? r.ctx.els.get(key(s.path)) : null
     el?.classList.add('sel')
-    if (s.gap) for (const wire of r.el.querySelectorAll('[data-gap]')) wire.classList.toggle('sel', wire.dataset.gap === JSON.stringify(s.gap))
+    if (s.gap) for (const w of r.el.querySelectorAll('[data-gap]')) w.classList.toggle('sel', w.dataset.gap === JSON.stringify(s.gap))
     if (s.branch) for (const branch of r.el.querySelectorAll('.branch')) branch.classList.toggle('sel', branch.dataset.path === key(s.branch))
-    const plus = s.gap ? r.el.querySelector('.wire-slot.sel > .gap-plus') : null
-    ;(el ?? plus)?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+    const slot = s.gap ? r.el.querySelector('.wire-slot.sel') : null
+    ;(el ?? slot)?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
     if (pendingEdit) { pendingEdit = false; setTimeout(edit0, 20) }
   }
 
@@ -920,20 +991,15 @@ export function mountLadder(host, tab) {
     on('tick', () => paint()),
     on('online', () => paint()),
   ]
-  // Type-to-edit (TIA): with an instruction selected, a printable key opens its first operand box seeded with that key.
-  function typeInto(ch) {
-    const s = sel(); if (!s || s.gap || s.branch || s.paths) return false
-    const t = targetIn(state.project, s); if (!t) return false
-    const f = operandFields(t)[0]; if (!f) return false
-    startEdit(atOf(s), fieldName(f), ch)
-    return !!activeInput
+  editor.api = {
+    drop: (pl) => { if (pl?.block) insertCall(pl.block); else if (pl?.lad) dropPayload(pl.lad) },
+    insert, insertCall, remove, insertNetwork, copy, paste, cut, edit: edit0, move, type: typeInto,
+    zoom: (d) => { zoom = Math.round(Math.max(0.6, Math.min(1.6, zoom + d)) * 10) / 10; root.style.zoom = zoom },
+    escape: () => { activeInput?.cancel(); setSel(null) },
   }
-  editor.api = { drop: (pl) => pl.lad && dropPayload(pl.lad), insert, remove, insertNetwork, copy, paste, cut, edit: edit0, move, type: typeInto, zoom: (d) => { zoom = Math.round(Math.max(0.6, Math.min(1.6, zoom + d)) * 10) / 10; root.style.zoom = zoom }, escape: () => { activeInput?.cancel(); closeBubble(); setSel(null) } }
-  root.addEventListener('mousemove', (ev) => { lastMove = ev; if (!probeRaf) probeRaf = requestAnimationFrame(() => { probeRaf = 0; probe(lastMove) }) })
-  root.addEventListener('mouseleave', () => setNear(null))
   host.addEventListener('dragover', (e) => e.preventDefault())
   addEventListener('dragstart', onDragStart); addEventListener('dragend', onDragEnd)
   render()
   if (!sel() && block().networks.length) select({ block: blockId, network: 0 })
-  return { dispose() { offs.forEach((f) => f()); ro.disconnect(); closeQuick(); closeBubble(); activeInput?.cancel(); removeEventListener('dragstart', onDragStart); removeEventListener('dragend', onDragEnd); if (editor.api && host.contains(root)) editor.api = null }, focus() { render() } }
+  return { dispose() { offs.forEach((f) => f()); ro.disconnect(); activeInput?.cancel(); removeEventListener('dragstart', onDragStart); removeEventListener('dragend', onDragEnd); if (editor.api && host.contains(root)) editor.api = null }, focus() { render() } }
 }

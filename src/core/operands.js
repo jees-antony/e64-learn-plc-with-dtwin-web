@@ -7,6 +7,18 @@ const EDGE_FB = { P: 'R_TRIG', N: 'F_TRIG' }
 const has = (c, k) => (c?.has ? c.has(k) : !!c?.includes?.(k))
 const slot = (kind) => (kind === 'bool' ? 1 : 0)
 
+// A call box (k: 'call') shows the parameters of the block it calls, so its operands depend on the project.
+// The editor installs a resolver (block name -> block); without one a call has no operands.
+let resolveBlock = () => null
+export function setBlockResolver(fn) { resolveBlock = typeof fn === 'function' ? fn : () => null }
+export const pinKind = (type) => (type === 'Bool' ? 'bool' : type === 'Time' ? 'time' : 'any')
+/** Parameters of an FB or FC: { inputs, inouts, outputs } each [{ pin, type, kind }]. */
+export function callPins(callee) {
+  const I = callee?.interface ?? {}
+  const list = (vars) => (vars ?? []).map((v) => ({ pin: v.name, type: v.type, kind: pinKind(v.type) }))
+  return { inputs: list(I.input), inouts: list(I.inout), outputs: list(I.output) }
+}
+
 /** Operands of one element in the order a learner fills them in: { field | pin, kind, label, optional? }. */
 export function operandFields(e) {
   if (!e) return []
@@ -22,6 +34,17 @@ export function operandFields(e) {
       return Object.entries(def.in).filter(([p]) => p !== def.flowIn)
         .map(([pin, kind]) => ({ pin, kind, label: pin, ...(kind === 'bool' ? { optional: true } : {}) }))
         .sort((x, y) => slot(x.kind) - slot(y.kind))
+    }
+    case 'call': {
+      // Inputs, then InOuts, then outputs (left side top to bottom, then right side). An FC needs every
+      // parameter connected; an FB keeps its last value, so its inputs and outputs are optional.
+      const callee = resolveBlock(e.block); if (!callee) return []
+      const p = callPins(callee), fc = callee.kind === 'FC'
+      return [
+        ...p.inputs.map((x) => ({ pin: x.pin, kind: x.kind, type: x.type, label: x.pin, dir: 'in', ...(fc ? {} : { optional: true }) })),
+        ...p.inouts.map((x) => ({ pin: x.pin, kind: x.kind, type: x.type, label: x.pin, dir: 'inout' })),
+        ...p.outputs.map((x) => ({ pin: x.pin, kind: x.kind, type: x.type, label: x.pin, dir: 'out', ...(fc ? {} : { optional: true }) })),
+      ]
     }
     default: return []
   }
@@ -47,15 +70,18 @@ export function operandSequence(net) {
 export function instancesOf(block) {
   const found = new Map()
   const walk = (list) => (list ?? []).forEach((e) => {
-    const fb = e.k === 'box' ? e.fb : EDGE_FB[e.k]
+    const fb = e.k === 'box' ? e.fb : e.k === 'call' ? e.block : EDGE_FB[e.k]
     if (fb && e.inst && !found.has(e.inst)) found.set(e.inst, fb)
     e.branches?.forEach(walk)
   })
   for (const net of block?.networks ?? []) walk(net.elements)
   return [...found].map(([name, fb]) => ({ name, fb }))
 }
-/** Output pins of a function block, for suggestions such as TON_1.Q: [{ pin, kind }]. */
-export function pinNames(fb) { return Object.entries(FB[fb]?.out ?? {}).map(([pin, kind]) => ({ pin, kind })) }
+/** Output pins of a function block (standard or project FB), for suggestions such as TON_1.Q: [{ pin, kind }]. */
+export function pinNames(fb) {
+  if (FB[fb]) return Object.entries(FB[fb].out).map(([pin, kind]) => ({ pin, kind }))
+  return callPins(resolveBlock(fb)).outputs.map((x) => ({ pin: x.pin, kind: x.kind }))
+}
 
 /**
  * What an operand text is: 'empty' | 'tag' | 'local' | 'literal' | 'pin' | 'unknown'.
@@ -80,7 +106,54 @@ const PLC_TYPE = { bool: 'Bool', int: 'Int', time: 'Time', any: 'Int' }
 export function suggestedTagType(e, f) {
   const pin = typeof f === 'string' ? f : f?.pin ?? f?.field
   const found = operandFields(e).find((x) => fieldName(x) === pin)
-  return PLC_TYPE[found?.kind] ?? 'Int'
+  return found?.type ?? PLC_TYPE[found?.kind] ?? 'Int'
+}
+
+const OPERAND_KEYS = ['tag', 'a', 'b', 'src', 'dest']
+/** Rename a PLC tag everywhere it is used (ladder operands, call parameters, FBD, SCL text, watch tables). Mutates. */
+export function renameTag(project, oldName, newName) {
+  const word = new RegExp(`\\b${oldName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'g')
+  const swap = (v) => (v === oldName ? newName : typeof v === 'string' && v.startsWith(`${oldName}.`) ? newName + v.slice(oldName.length) : v)
+  const lad = (e) => {
+    for (const k of OPERAND_KEYS) if (typeof e[k] === 'string') e[k] = swap(e[k])
+    if (e.args) for (const p of Object.keys(e.args)) if (typeof e.args[p] === 'string') e.args[p] = swap(e.args[p])
+    e.branches?.forEach((l) => l.forEach(lad))
+  }
+  const fbd = (n) => { if (!n || typeof n !== 'object') return; if (n.t === 'var') n.name = swap(n.name); n.in?.forEach(fbd); if (n.args) Object.values(n.args).forEach(fbd) }
+  for (const b of project.blocks) {
+    for (const net of b.networks ?? []) { (net.elements ?? []).forEach(lad); (net.coils ?? []).forEach(lad); fbd(net.expr); if (net.out?.tag) net.out.tag = swap(net.out.tag) }
+    if (typeof b.code === 'string') b.code = b.code.replace(word, newName)
+  }
+  for (const w of project.watch ?? []) w.rows = w.rows.map(swap)
+  const t = project.tags.find((x) => x.name === oldName); if (t) t.name = newName
+}
+/** Rename a block: calls of an FB/FC, instance DBs of an FB, multi-instance types, and calls that use a DB as instance. Mutates. */
+export function renameBlock(project, oldName, newName) {
+  const each = (e) => { if (e.k === 'call') { if (e.block === oldName) e.block = newName; if (e.inst === oldName) e.inst = newName } e.branches?.forEach((l) => l.forEach(each)) }
+  for (const b of project.blocks) {
+    if (b.name === oldName) b.name = newName
+    if (b.instanceOf === oldName) b.instanceOf = newName
+    for (const vars of Object.values(b.interface ?? {})) for (const v of vars) if (v.type === oldName) v.type = newName
+    for (const net of b.networks ?? []) (net.elements ?? []).forEach(each)
+  }
+}
+
+/** Names a learner can type into an empty box ("??"), as in the engineering tool. */
+export const BOX_INSTRUCTIONS = [
+  ['TON', 'Generate on-delay'], ['TOF', 'Generate off-delay'], ['TP', 'Generate pulse'],
+  ['CTU', 'Count up'], ['CTD', 'Count down'], ['SR', 'Set/reset flip-flop'], ['RS', 'Reset/set flip-flop'],
+  ['CMP ==', 'Equal'], ['CMP <>', 'Not equal'], ['CMP >', 'Greater than'], ['CMP >=', 'Greater or equal'], ['CMP <', 'Less than'], ['CMP <=', 'Less or equal'],
+  ['MOVE', 'Move value'], ['ADD', 'Add'], ['SUB', 'Subtract'], ['MUL', 'Multiply'], ['DIV', 'Divide'],
+]
+/** Element kind for an empty-box name: 'box:TON', 'cmp:==', 'move', 'math:add', 'call:<block>' or null. */
+export function boxKindFor(name, project) {
+  const n = String(name ?? '').trim(), up = n.toUpperCase()
+  if (FB[up] && !['R_TRIG', 'F_TRIG'].includes(up)) return `box:${up}`
+  const cmp = /^CMP\s*(==|<>|>=|<=|>|<)$/i.exec(n); if (cmp) return `cmp:${cmp[1]}`
+  if (up === 'MOVE') return 'move'
+  if (['ADD', 'SUB', 'MUL', 'DIV'].includes(up)) return `math:${up.toLowerCase()}`
+  const blk = project?.blocks.find((b) => (b.kind === 'FB' || b.kind === 'FC') && b.name.toLowerCase() === n.toLowerCase())
+  return blk ? `call:${blk.name}` : null
 }
 
 /** Rename an instance and the `<old>.<pin>` operands that point at it. Mutates the networks. */

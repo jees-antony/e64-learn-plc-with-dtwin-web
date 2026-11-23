@@ -1,12 +1,14 @@
 // The window: title bar, menus, toolbar, project tree, editor tabs, task cards, inspector, status bar.
-import { IDENT, uid } from '../core/model.js'
+import { IDENT, blockLabel, uid } from '../core/model.js'
+import { renameBlock } from '../core/operands.js'
+import { addBlockDialog, blockIcon } from './block-dialogs.js'
 import { instructionsCard, onlineCard, simulationCard } from './cards.js'
 import { addBlock, commands, editor, installKeyboard, toast } from './commands.js'
 import { clear, contextMenu, h, svg } from './dom.js'
 import { mountBlock } from './editors/block.js'
 import { mountTags, mountWatch } from './editors/tables.js'
 import { log } from './online.js'
-import { blockById, closeTab, edit, emit, on, openTab, select, state, tabKey } from './store.js'
+import { blockById, closeTab, dragging, edit, emit, on, openTab, select, state, tabKey } from './store.js'
 
 const $ = (id) => document.getElementById(id)
 const icon = (d) => svg('svg', { viewBox: '0 0 24 24' }, svg('path', { d }))
@@ -75,19 +77,49 @@ function toolbar() {
 
 /* -------------------------------------------------------------------- tree -- */
 const TS = { open: new Set(['project', 'plc', 'blocks', 'tags', 'watch']), sel: null, renaming: null }
+const DV = { open: true }
+const NA_TIP = 'Not available in Web PLC Studio'
+const SEC_TITLES = [['input', 'Input'], ['output', 'Output'], ['inout', 'InOut'], ['static', 'Static'], ['temp', 'Temp']]
+const KIND_IC = { OB: 'ob', FB: 'fb', FC: 'fc', DB: 'db' }
+const byName = (a, c) => a.name.toLowerCase().localeCompare(c.name.toLowerCase())
+/** Variables of a DB: its own static variables, or the layout of its FB for an instance DB. */
+function dbVariables(b) {
+  if (!b.instanceOf) return (b.interface?.static ?? []).map((v) => ({ ...v, section: 'Static' }))
+  const fb = state.project.blocks.find((x) => x.kind === 'FB' && x.name === b.instanceOf)
+  if (!fb) return []
+  return SEC_TITLES.filter(([k]) => k !== 'temp').flatMap(([k, t]) => (fb.interface?.[k] ?? []).map((v) => ({ ...v, section: t })))
+}
+const dbKindText = (b) => (b.instanceOf ? `Instance DB of ${b.instanceOf}` : 'Global DB')
+
 function tree(host) {
   const body = h('div', { class: 'tree', tabindex: '0' })
-  host.append(h('div', { class: 'pane-head' }, 'Project tree', h('span', { class: 'grow' })), h('div', { class: 'pane-body', id: 'treebody' }, body))
-  const node = (id, depth, { label, ic, icText, badge, open: isOpen, hasKids, run, ctx, renamable, dim, live }) => {
+  const detBody = h('div', { class: 'det-body' })
+  const detToggle = h('button', { class: 'det-toggle', title: 'Show / hide the details view', 'aria-expanded': 'true', onClick: () => { DV.open = !DV.open; applyDetails() } }, '▼')
+  const details = h('div', { class: 'details' }, h('div', { class: 'det-head', onClick: (e) => { if (e.target !== detToggle) detToggle.click() } }, h('span', null, 'Details view'), h('span', { class: 'grow' }), detToggle), detBody)
+  host.append(h('div', { class: 'pane-head' }, 'Project tree', h('span', { class: 'grow' })),
+    h('div', { class: 'tree-tabs' }, h('span', { class: 'tt on' }, 'Devices')),
+    h('div', { class: 'pane-body', id: 'treebody' }, body), details)
+  function applyDetails() {
+    details.classList.toggle('closed', !DV.open)
+    detToggle.textContent = DV.open ? '▼' : '▶'; detToggle.setAttribute('aria-expanded', String(DV.open))
+    if (DV.open) renderDetails()
+  }
+
+  const dragStart = (payload) => (e) => { dragging.payload = payload; e.dataTransfer.setData('text/plain', JSON.stringify(payload)); e.dataTransfer.effectAllowed = 'copy' }
+  const dragEnd = () => { dragging.payload = null }
+
+  const node = (id, depth, { label, ic, icText, iconEl, badge, hasKids, run, ctx, na, drag, live, tip }) => {
     const rn = TS.renaming === id
-    const el = h('div', { class: `node${TS.sel === id ? ' sel' : ''}`, dataset: { id }, style: { paddingLeft: `${6 + depth * 14}px` } },
-      h('span', { class: 'tw', onClick: (e) => { e.stopPropagation(); TS.open.has(id) ? TS.open.delete(id) : TS.open.add(id); render() } }, hasKids ? (TS.open.has(id) ? '▼' : '▶') : ''),
-      h('span', { class: `ic ${ic}` }, icText ?? ''),
-      rn ? h('input', { value: label, onClick: (e) => e.stopPropagation(), onKeydown: (e) => { e.stopPropagation(); if (e.key === 'Enter') commitRename(e.target.value, id); if (e.key === 'Escape') { TS.renaming = null; render() } }, onBlur: (e) => commitRename(e.target.value, id) }) : h('span', { class: `lbl${dim ? ' dim' : ''}` }, label),
+    const open = TS.open.has(id)
+    const el = h('div', { class: `node${TS.sel === id ? ' sel' : ''}${na ? ' na' : ''}`, dataset: { id }, title: na ? NA_TIP : tip, style: { paddingLeft: `${6 + depth * 14}px` } },
+      h('span', { class: 'tw', onClick: (e) => { if (!hasKids) return; e.stopPropagation(); open ? TS.open.delete(id) : TS.open.add(id); render() } }, hasKids ? (open ? '▼' : '▶') : na === 'folder' ? '▶' : ''),
+      iconEl ? h('span', { class: 'ic-svg' }, iconEl) : h('span', { class: `ic ${ic}` }, icText ?? ''),
+      rn ? h('input', { value: label, onClick: (e) => e.stopPropagation(), onKeydown: (e) => { e.stopPropagation(); if (e.key === 'Enter') commitRename(e.target.value, id); if (e.key === 'Escape') { TS.renaming = null; render() } }, onBlur: (e) => commitRename(e.target.value, id) }) : h('span', { class: 'lbl' }, label),
       live ? h('span', { class: 'live' }) : badge ? h('span', { class: 'badge' }, badge) : null)
-    el.addEventListener('mousedown', () => { TS.sel = id; body.querySelectorAll('.node.sel').forEach((n) => n.classList.remove('sel')); el.classList.add('sel'); body.focus({ preventScroll: true }); document.body.dataset.pane = 'tree' })
-    el.addEventListener('dblclick', () => run?.())
-    el.addEventListener('contextmenu', (e) => { e.preventDefault(); TS.sel = id; render(); if (ctx) contextMenu(e.clientX, e.clientY, ctx) })
+    if (drag && !rn) { el.draggable = true; el.addEventListener('dragstart', dragStart(drag)); el.addEventListener('dragend', dragEnd) }
+    el.addEventListener('mousedown', () => { TS.sel = id; body.querySelectorAll('.node.sel').forEach((n) => n.classList.remove('sel')); el.classList.add('sel'); body.focus({ preventScroll: true }); document.body.dataset.pane = 'tree'; renderDetails() })
+    if (!na) el.addEventListener('dblclick', () => run?.())
+    el.addEventListener('contextmenu', (e) => { e.preventDefault(); TS.sel = id; render(); if (ctx && !na) contextMenu(e.clientX, e.clientY, ctx) })
     if (rn) setTimeout(() => body.querySelector('input')?.select(), 0)
     return el
   }
@@ -96,10 +128,11 @@ function tree(host) {
     TS.renaming = null
     const v = value.trim()
     if (id.startsWith('b:')) {
-      const bid = id.slice(2)
-      if (!IDENT.test(v)) toast('Block names may contain letters, digits and underscores, and must not start with a digit.')
-      else if (state.project.blocks.some((b) => b.name === v && b.id !== bid)) toast(`A block named "${v}" already exists.`)
-      else edit((p) => { p.blocks.find((b) => b.id === bid).name = v })
+      const bid = id.slice(2), cur = blockById(bid)
+      if (!cur || v === cur.name) { /* unchanged */ }
+      else if (!IDENT.test(v)) toast('Block names may contain letters, digits and underscores, and must not start with a digit.')
+      else if (state.project.blocks.some((b) => b.name.toLowerCase() === v.toLowerCase() && b.id !== bid)) toast(`A block named "${v}" already exists.`)
+      else { const old = cur.name; edit((p) => renameBlock(p, old, v)) }
     } else if (id.startsWith('w:')) edit((p) => { p.watch.find((w) => w.id === id.slice(2)).name = v || 'Watch table' })
     else if (id === 'project') edit((p) => { p.name = v || p.name })
     else if (id === 'plc') edit((p) => { p.plc.name = v || p.plc.name })
@@ -111,38 +144,81 @@ function tree(host) {
     else if (id?.startsWith('w:')) { closeTab(tabKey({ type: 'watch', id: id.slice(2) })); edit((p) => { p.watch = p.watch.filter((w) => w.id !== id.slice(2)) }) }
   }
   const openBlock = (b) => () => openTab({ type: 'block', id: b.id })
+  const openTags = () => openTab({ type: 'tags', id: 'default' })
+  const rename = (id) => () => { TS.renaming = id; render() }
+  const addWatch = () => { const w = { id: uid('w'), name: `Watch table_${state.project.watch.length + 1}`, rows: [] }; edit((p) => p.watch.push(w)); openTab({ type: 'watch', id: w.id }) }
+  const grey = (id, depth, label, ic, icText, folder) => node(`g:${id}`, depth, { label, ic, icText, na: folder ? 'folder' : true })
+
   function render() {
     const p = state.project, rows = []
-    const ob = (b) => ({ OB: 'ob', FB: 'fb', FC: 'fc' })[b.kind]
-    rows.push(node('project', 0, { label: p.name, ic: 'folder', icText: '▣', hasKids: true, renamable: true, ctx: [{ label: 'Rename', keys: 'F2', run: () => { TS.renaming = 'project'; render() } }] }))
+    rows.push(node('project', 0, { label: p.name, ic: 'folder', icText: '▣', hasKids: true, ctx: [{ label: 'Rename', keys: 'F2', run: rename('project') }] }))
     if (TS.open.has('project')) {
-      rows.push(node('plc', 1, { label: p.plc.name, ic: 'dev', icText: 'CPU', hasKids: true, live: state.online.mode !== 'offline', badge: '', ctx: [{ label: 'Rename', keys: 'F2', run: () => { TS.renaming = 'plc'; render() } }] }))
+      rows.push(grey('adddev', 1, 'Add new device', 'na', '✚'), grey('nets', 1, 'Devices & networks', 'na', '⇄'))
+      rows.push(node('plc', 1, { label: `${p.plc.name} [CPU 1214C DC/DC/DC]`, ic: 'dev', icText: 'CPU', hasKids: true, live: state.online.mode !== 'offline', ctx: [{ label: 'Rename', keys: 'F2', run: rename('plc') }] }))
       if (TS.open.has('plc')) {
+        rows.push(grey('devcfg', 2, 'Device configuration', 'na', '⚙'))
+        rows.push(node('online', 2, { label: 'Online & diagnostics', ic: 'diag', icText: '◉', run: () => emit('card', 'Online tools') }))
         rows.push(node('blocks', 2, { label: 'Program blocks', ic: 'folder', icText: '▤', hasKids: true, ctx: [{ label: 'Add new block…', run: () => emit('addblock') }] }))
         if (TS.open.has('blocks')) {
-          rows.push(node('addblock', 3, { label: 'Add new block', ic: 'folder', icText: '✚', dim: true, run: () => emit('addblock') }))
-          for (const b of [...p.blocks].sort((a, c) => a.kind.localeCompare(c.kind) * -1 || a.number - c.number)) {
-            rows.push(node(`b:${b.id}`, 3, { label: b.name, ic: ob(b), icText: b.kind, badge: `[${b.kind}${b.number}] ${b.lang}`, run: openBlock(b), renamable: true,
-              ctx: [{ label: 'Open', run: openBlock(b) }, { label: 'Rename', keys: 'F2', run: () => { TS.renaming = `b:${b.id}`; render() } }, '-', { label: 'Delete', keys: 'Delete', run: deleteSelected }] }))
+          rows.push(node('addblock', 3, { label: 'Add new block', ic: 'add', icText: '✚', run: () => emit('addblock') }))
+          for (const b of [...p.blocks].sort(byName)) {
+            const drag = b.kind === 'FB' || b.kind === 'FC' ? { block: b.name } : null
+            rows.push(node(`b:${b.id}`, 3, { label: blockLabel(b), iconEl: blockIcon(b.kind, 15), ic: KIND_IC[b.kind], drag, run: openBlock(b),
+              tip: b.kind === 'DB' ? dbKindText(b) : b.lang,
+              ctx: [{ label: 'Open', run: openBlock(b) }, { label: 'Rename', keys: 'F2', run: rename(`b:${b.id}`) }, { label: 'Delete', keys: 'Delete', run: deleteSelected }, '-', { label: 'Compile', run: () => commands.get('compile').run() }] }))
           }
         }
+        rows.push(grey('tech', 2, 'Technology objects', 'folder', '▤', true), grey('ext', 2, 'External source files', 'folder', '▤', true))
         rows.push(node('tags', 2, { label: 'PLC tags', ic: 'folder', icText: '▤', hasKids: true }))
-        if (TS.open.has('tags')) rows.push(node('tagtable', 3, { label: 'Default tag table', ic: 'tag', icText: 'TAG', badge: `${p.tags.length}`, run: () => openTab({ type: 'tags', id: 'default' }) }))
+        if (TS.open.has('tags')) {
+          rows.push(node('alltags', 3, { label: 'Show all tags', ic: 'tag', icText: 'TAG', run: openTags }))
+          rows.push(grey('addtt', 3, 'Add new tag table', 'na', '✚'))
+          rows.push(node('tagtable', 3, { label: `Default tag table [${p.tags.length}]`, ic: 'tag', icText: 'TAG', run: openTags }))
+        }
+        rows.push(grey('types', 2, 'PLC data types', 'folder', '▤', true))
         rows.push(node('watch', 2, { label: 'Watch and force tables', ic: 'folder', icText: '▤', hasKids: true, ctx: [{ label: 'Add new watch table', run: addWatch }] }))
         if (TS.open.has('watch')) {
-          rows.push(node('addwatch', 3, { label: 'Add new watch table', ic: 'folder', icText: '✚', dim: true, run: addWatch }))
-          for (const w of p.watch) rows.push(node(`w:${w.id}`, 3, { label: w.name, ic: 'watch', icText: 'WT', run: () => openTab({ type: 'watch', id: w.id }), ctx: [{ label: 'Open', run: () => openTab({ type: 'watch', id: w.id }) }, { label: 'Rename', keys: 'F2', run: () => { TS.renaming = `w:${w.id}`; render() } }, { label: 'Delete', run: deleteSelected }] }))
+          rows.push(node('addwatch', 3, { label: 'Add new watch table', ic: 'add', icText: '✚', run: addWatch }))
+          for (const w of p.watch) rows.push(node(`w:${w.id}`, 3, { label: w.name, ic: 'watch', icText: 'WT', run: () => openTab({ type: 'watch', id: w.id }), ctx: [{ label: 'Open', run: () => openTab({ type: 'watch', id: w.id }) }, { label: 'Rename', keys: 'F2', run: rename(`w:${w.id}`) }, { label: 'Delete', keys: 'Delete', run: deleteSelected }] }))
+          rows.push(grey('force', 3, 'Force table', 'na', 'F'))
         }
+        rows.push(grey('backups', 2, 'Online backups', 'folder', '▤', true), grey('traces', 2, 'Traces', 'folder', '▤', true), grey('proginfo', 2, 'Program info', 'na', 'i'), grey('alarms', 2, 'PLC alarm text lists', 'na', 'A'))
       }
+      rows.push(grey('common', 1, 'Common data', 'folder', '▤', true), grey('docs', 1, 'Documentation settings', 'folder', '▤', true), grey('lang', 1, 'Languages & resources', 'folder', '▤', true))
     }
+    rows.push(grey('access', 0, 'Online access', 'folder', '▤', true), grey('card', 0, 'Card Reader/USB memory', 'folder', '▤', true))
     clear(body).append(...rows)
+    renderDetails()
   }
-  const addWatch = () => { const w = { id: uid('w'), name: `Watch table_${state.project.watch.length + 1}`, rows: [] }; edit((p) => p.watch.push(w)); openTab({ type: 'watch', id: w.id }) }
-  on('project', ({ reason } = {}) => { if (reason !== 'edit' || !document.activeElement?.closest?.('#editor')) render() })
+
+  /* ---- details view: contents of the selected tree node ---- */
+  function detailsTable(cols, rows) { return h('table', { class: 'dtable' }, h('thead', null, h('tr', null, cols.map((c) => h('th', null, c)))), h('tbody', null, rows)) }
+  function renderDetails() {
+    if (!DV.open) return
+    const p = state.project, id = TS.sel
+    let content = null
+    if (id === 'tags' || id === 'alltags' || id === 'tagtable') {
+      content = detailsTable(['Name', 'Data type', 'Address'], p.tags.map((t) => { const tr = h('tr', { class: 'drag', draggable: 'true', title: 'Drag onto a ladder network' }, h('td', null, t.name), h('td', null, t.type), h('td', { class: 'mono' }, t.address ?? '')); tr.addEventListener('dragstart', dragStart({ tag: t.name })); tr.addEventListener('dragend', dragEnd); return tr }))
+    } else if (id === 'blocks') {
+      content = detailsTable(['Name', 'Number', 'Type'], [...p.blocks].sort(byName).map((b) => {
+        const tr = h('tr', { class: b.kind === 'FB' || b.kind === 'FC' ? 'drag' : '', ondblclick: openBlock(b) }, h('td', null, h('span', { class: 'ic-svg' }, blockIcon(b.kind, 13)), b.name), h('td', null, `${b.kind}${b.number}`), h('td', null, b.kind === 'DB' ? dbKindText(b) : b.lang))
+        if (b.kind === 'FB' || b.kind === 'FC') { tr.draggable = true; tr.addEventListener('dragstart', dragStart({ block: b.name })); tr.addEventListener('dragend', dragEnd) }
+        return tr
+      }))
+    } else if (id?.startsWith('b:')) {
+      const b = blockById(id.slice(2))
+      if (b?.kind === 'DB') content = detailsTable(['Name', 'Data type', 'Start value'], dbVariables(b).map((v) => h('tr', null, h('td', null, v.name), h('td', null, v.type), h('td', null, v.init ?? ''))))
+      else if (b) content = detailsTable(['Name', 'Data type', 'Section'], SEC_TITLES.flatMap(([k, t]) => (b.interface?.[k] ?? []).map((v) => h('tr', null, h('td', null, v.name), h('td', null, v.type), h('td', null, t)))))
+    }
+    clear(detBody)
+    if (content) detBody.append(content)
+  }
+
+  on('project', ({ reason } = {}) => { if (reason !== 'edit' || !document.activeElement?.closest?.('#editor')) render(); else renderDetails() })
   on('online', render)
   on('rename', (id) => { if (id) { TS.sel = `b:${id}`; TS.renaming = `b:${id}`; TS.open.add('blocks'); render() } else if (TS.sel && (TS.sel.startsWith('b:') || TS.sel.startsWith('w:') || TS.sel === 'project' || TS.sel === 'plc')) { TS.renaming = TS.sel; render() } })
   body.addEventListener('keydown', (e) => { if (e.key === 'Delete') { e.preventDefault(); e.stopPropagation(); deleteSelected() } else if (e.key === 'Enter') { e.preventDefault(); body.querySelector('.node.sel')?.dispatchEvent(new MouseEvent('dblclick')) } })
-  on('tabs', () => { const t = state.tabs.find((x) => tabKey(x) === state.active); if (t?.type === 'block') { TS.sel = `b:${t.id}`; body.querySelectorAll('.node.sel').forEach((n) => n.classList.remove('sel')); body.querySelector(`[data-id="b:${t.id}"]`)?.classList.add('sel') } })
+  on('tabs', () => { const t = state.tabs.find((x) => tabKey(x) === state.active); if (t?.type === 'block') { TS.sel = `b:${t.id}`; body.querySelectorAll('.node.sel').forEach((n) => n.classList.remove('sel')); body.querySelector(`[data-id="b:${t.id}"]`)?.classList.add('sel'); renderDetails() } })
   render()
   return { deleteSelected }
 }
@@ -184,7 +260,8 @@ function center(host) {
 
 /* -------------------------------------------------------------- right cards -- */
 function cards(host) {
-  const CARDS = [['Instructions', instructionsCard], ['Online tools', onlineCard], ['Simulation', simulationCard]]
+  // TIA order: Instructions, Testing, Online tools, then Tasks and Libraries (not available here)
+  const CARDS = [['Instructions', instructionsCard], ['Testing', simulationCard], ['Online tools', onlineCard]]
   const body = h('div', { id: 'cardbody' }), strip = h('div', { id: 'cardtabs' })
   host.append(body, strip)
   const built = new Map(); let active = 'Instructions'
@@ -193,8 +270,9 @@ function cards(host) {
     strip.querySelectorAll('.ctab').forEach((b) => b.classList.toggle('active', b.dataset.n === active))
   }
   for (const [n, make] of CARDS) { built.set(n, make()); strip.append(h('button', { class: 'ctab', dataset: { n }, onClick: () => { active = n; show() } }, n)) }
+  for (const n of ['Tasks', 'Libraries']) strip.append(h('button', { class: 'ctab na', dataset: { n }, disabled: true, title: 'Not available in Web PLC Studio' }, n))
+  on('card', (n) => { if (built.has(n)) { active = n; show(); document.getElementById('main')?.classList.remove('no-right') } })
   show()
-  on('rename', () => {})
 }
 
 /* --------------------------------------------------------------- inspector -- */
@@ -237,29 +315,10 @@ function inspector(host) {
 
 /* ---------------------------------------------------------------- dialogs -- */
 function dialogs() {
-  const addDlg = h('dialog', null)
-  const open = () => {
-    let kind = 'OB', lang = 'LAD'
-    const name = h('input', { class: 'in', style: { width: '100%' }, value: '' })
-    const nextNum = (k) => { const n = state.project.blocks.filter((b) => b.kind === k).map((b) => b.number); return n.length ? Math.max(...n) + 1 : 1 }
-    const num = h('input', { class: 'in', type: 'number', value: String(nextNum('OB')), style: { width: '80px' } })
-    const kinds = h('div', { style: { display: 'flex', gap: '8px' } })
-    const refresh = () => {
-      kinds.replaceChildren(...[['OB', 'Organization block', 'Cyclic program'], ['FB', 'Function block', 'With memory'], ['FC', 'Function', 'No memory']].map(([k, t, s]) => h('button', { class: `btn${kind === k ? ' primary' : ''}`, style: { height: '52px', flex: 1, textAlign: 'left', padding: '4px 10px' }, onClick: () => { kind = k; num.value = String(nextNum(k)); name.value = name.dataset.touched ? name.value : (k === 'OB' ? 'Main' : `${k}_${num.value}`); refresh() } }, h('b', null, `${k} · ${t}`), h('br'), h('small', null, s))))
-    }
-    refresh()
-    name.value = state.project.blocks.some((b) => b.name === 'Main') ? 'Block_2' : 'Main'
-    const langs = h('select', { class: 'in', onChange: (e) => { lang = e.target.value } }, [['LAD', 'LAD (Ladder logic)'], ['FBD', 'FBD (Function block diagram)'], ['SCL', 'SCL (Structured control language)']].map(([v, l]) => h('option', { value: v }, l)))
-    addDlg.replaceChildren(h('div', { class: 'dhead' }, 'Add new block', h('button', { onClick: () => addDlg.close() }, '×')), h('div', { class: 'dbody' },
-      h('div', { class: 'props', style: { gridTemplateColumns: '90px 1fr' } }, h('label', null, 'Name'), name, h('label', null, 'Type'), kinds, h('label', null, 'Language'), langs, h('label', null, 'Number'), num),
-      h('div', { style: { display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '12px' } }, h('button', { class: 'btn', onClick: () => addDlg.close() }, 'Cancel'), h('button', { class: 'btn primary', onClick: () => {
-        const n = name.value.trim()
-        if (!IDENT.test(n)) return toast('Invalid block name'); if (state.project.blocks.some((b) => b.name === n)) return toast('Name already used')
-        addBlock(kind, lang, n, Number(num.value) || 1); addDlg.close()
-      } }, 'OK'))))
-    addDlg.showModal(); name.select()
-  }
-  on('addblock', open)
+  on('addblock', async (kind) => {
+    const r = await addBlockDialog(state.project, typeof kind === 'string' ? kind : 'OB')
+    if (r) addBlock(r.kind, r.lang, r.name, r.number, { instanceOf: r.instanceOf, open: r.open })
+  })
 
   const keysDlg = h('dialog', null)
   on('shortcuts', () => {
@@ -272,7 +331,7 @@ function dialogs() {
   })
   const srcDlg = h('dialog', null)
   on('source', () => { srcDlg.replaceChildren(h('div', { class: 'dhead' }, 'Generated Structured Text (what the CPU runs)', h('button', { onClick: () => srcDlg.close() }, '×')), h('div', { class: 'dbody' }, h('pre', { class: 'mono', style: { margin: 0, fontSize: '11.5px', whiteSpace: 'pre-wrap' } }, state.online.source))); srcDlg.showModal() })
-  document.body.append(addDlg, keysDlg, srcDlg)
+  document.body.append(keysDlg, srcDlg)
 }
 
 /* ------------------------------------------------------------------ status -- */

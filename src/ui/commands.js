@@ -76,10 +76,11 @@ def('toggleLeft', 'Show / hide project tree', '', 'app', () => emit('layout', 'l
 def('toggleRight', 'Show / hide task cards', '', 'app', () => emit('layout', 'right'))
 def('toggleBottom', 'Show / hide inspector window', '', 'app', () => emit('layout', 'bottom'))
 
-export function addBlock(kind, lang, name, number) {
-  const b = newBlock(kind, name, lang, number)
+/** Create a block. opts: { instanceOf } for an instance DB, { open: false } to keep the current editor. */
+export function addBlock(kind, lang, name, number, opts = {}) {
+  const b = newBlock(kind, name, lang, number, opts)
   edit((p) => p.blocks.push(b))
-  openTab({ type: 'block', id: b.id })
+  if (opts.open !== false) openTab({ type: 'block', id: b.id })
   return b
 }
 
@@ -102,6 +103,7 @@ export function installKeyboard() {
     }
     const c = byKeys.get(k)
     if (!c) return
+    if (c.id === 'escape' && document.querySelector('.ctx')) return   // Esc closes an open context menu only (dom.js), keeping the selection
     const typing = inText(e.target)
     if (typing && !c.global) return
     if (document.body.dataset.view === 'twin' && !c.global) return   // editor keys do nothing on the twin page

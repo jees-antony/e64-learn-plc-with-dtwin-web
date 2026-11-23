@@ -27,7 +27,10 @@ export function newNetwork(lang) {
     : { id: uid('n'), title: '', comment: '', elements: [], coils: [] }
 }
 
-export function newBlock(kind, name, lang, number) {
+/** OB / FB / FC are code blocks; a DB is data: a global DB has its own variables (`interface.static`),
+ *  an instance DB (`instanceOf`) holds the data of one FB call and takes its layout from that FB. */
+export function newBlock(kind, name, lang, number, opts = {}) {
+  if (kind === 'DB') return { id: uid('b'), kind: 'DB', name, number, ...(opts.instanceOf ? { instanceOf: opts.instanceOf } : {}), interface: { static: [] }, comment: '' }
   return {
     id: uid('b'), kind, name, number, lang,
     interface: { input: [], output: [], inout: [], static: [], temp: [] },
@@ -35,6 +38,22 @@ export function newBlock(kind, name, lang, number) {
     code: lang === 'SCL' ? '' : undefined,
     comment: '',
   }
+}
+
+export const isCodeBlock = (b) => b?.kind === 'OB' || b?.kind === 'FB' || b?.kind === 'FC'
+export const blockLabel = (b) => `${b.name} [${b.kind}${b.number}]`
+/** Next free number for a block kind (TIA numbers OB, FB, FC and DB separately). */
+export function nextBlockNumber(project, kind) {
+  const used = new Set(project.blocks.filter((b) => b.kind === kind).map((b) => Number(b.number)))
+  let n = 1; while (used.has(n)) n++
+  return n
+}
+/** A free name: `base`, else `base_1`, `base_2` … (block, tag and DB names share one namespace). */
+export function freeName(project, base) {
+  const taken = new Set([...project.blocks.map((b) => b.name.toLowerCase()), ...project.tags.map((t) => t.name.toLowerCase())])
+  if (!taken.has(base.toLowerCase())) return base
+  let i = 1; while (taken.has(`${base}_${i}`.toLowerCase())) i++
+  return `${base}_${i}`
 }
 
 /** Starting project for the water tank twin: I/O tags at the wired addresses and a fill / drain program. */

@@ -73,6 +73,59 @@ export function mountTags(host) {
   return { dispose: () => { offs.forEach(f => f()); pickers.forEach(p => p.dispose()) } }
 }
 
+/* ------------------------------------------------------------ data block -- */
+/** Editor of a data block: an editable grid for a global DB, a read-only grid of the FB's variables for an instance DB. */
+export function mountDb(host, tab) {
+  const id = tab.id
+  const db = () => blockById(id)
+  let pickers = []
+  const b0 = db()
+  const body = h('div', { class: 'ed-body' })
+  const sub = h('span', { class: 'tag-app' })
+  host.append(h('div', { class: 'ed-head' }, h('span', { class: 'title' }, `${b0.name} [DB${b0.number}]`), sub, h('span', { class: 'grow' })), body)
+  const fbOf = (b) => state.project.blocks.find((x) => x.kind === 'FB' && x.name === b.instanceOf)
+  const monCell = (b, v) => { const val = readOperand('', `${b.name}.${v.name}`); return h('td', { class: `val ${val === true ? 't' : val === false ? 'f' : ''}`, dataset: { mon: `${b.name}.${v.name}` } }, fmt(val)) }
+  const render = () => {
+    const b = db(); if (!b) return
+    pickers.forEach((p) => p.dispose()); pickers = []
+    const live = isOnline()
+    sub.textContent = b.instanceOf ? `Instance DB of ${b.instanceOf}` : 'Global DB'
+    if (b.instanceOf) {
+      const fb = fbOf(b)
+      if (!fb) { body.replaceChildren(h('div', { class: 'insert-hint', style: { color: '#d03030' } }, `The function block "${b.instanceOf}" no longer exists, so this instance data block has no variables.`)); return }
+      const rows = [['input', 'Input'], ['output', 'Output'], ['inout', 'InOut'], ['static', 'Static']].flatMap(([k, t]) => (fb.interface[k] ?? []).map((v) =>
+        h('tr', null, h('td', { class: 'ro' }, t), h('td', { class: 'ro' }, v.name), h('td', { class: 'ro' }, v.type), h('td', { class: 'ro' }, v.init ?? ''), live ? monCell(b, v) : null)))
+      body.replaceChildren(h('table', { class: 'grid' }, h('thead', null, h('tr', null, ['Section', 'Name', 'Data type', 'Start value', live ? 'Monitor value' : null].map((x) => (x === null ? null : h('th', null, x))))), h('tbody', null, rows)),
+        h('div', { class: 'insert-hint' }, `The variables of an instance data block are defined by the interface of ${fb.name}. Change them there.`))
+      return
+    }
+    const vars = b.interface.static
+    const rows = vars.map((v, i) => {
+      const picker = typePicker({ project: () => state.project, instances: false, value: () => db()?.interface.static[i]?.type ?? '', label: `Data type for ${b.name} ${v.name}`, change: (value) => edit((p) => { p.blocks.find((x) => x.id === id).interface.static[i].type = value }, `db:${id}:${i}:type`) })
+      pickers.push(picker)
+      const set = (key, coalesce) => (e) => edit((p) => { p.blocks.find((x) => x.id === id).interface.static[i][key] = e.target.value }, `db:${id}:${i}:${coalesce}`)
+      return h('tr', { dataset: { i } },
+        h('td', { class: 'ro', style: { width: '30px', textAlign: 'center' } }, i + 1),
+        h('td', null, h('input', { value: v.name, class: IDENT.test(v.name) ? '' : 'bad', onInput: set('name', 'n') })),
+        h('td', null, picker.el),
+        h('td', null, h('input', { value: v.init ?? '', placeholder: 'default', onInput: set('init', 'i') })),
+        live ? monCell(b, v) : null,
+        h('td', null, h('input', { value: v.comment ?? '', onInput: set('comment', 'c') })),
+        h('td', { class: 'ro', style: { width: '28px', textAlign: 'center', cursor: 'pointer', color: '#d03030' }, title: 'Delete variable', onClick: () => { edit((p) => p.blocks.find((x) => x.id === id).interface.static.splice(i, 1)); render() } }, '×'))
+    })
+    rows.push(h('tr', { class: 'add', onClick: () => { edit((p) => p.blocks.find((x) => x.id === id).interface.static.push({ name: `Static_${vars.length + 1}`, type: 'Bool' })); render(); body.querySelector('tbody tr:nth-last-child(2) input')?.select() } }, h('td', { class: 'ro' }, '✚'), h('td', { colspan: live ? 6 : 5 }, '<Add new>')))
+    body.replaceChildren(h('table', { class: 'grid' }, h('thead', null, h('tr', null, ['', 'Name', 'Data type', 'Start value', live ? 'Monitor value' : null, 'Comment', ''].map((x) => (x === null ? null : h('th', null, x))))), h('tbody', null, rows)),
+      h('div', { class: 'insert-hint' }, 'A global data block can be read and written by every block as DBname.Variable. The start value is used when the program is downloaded.'))
+  }
+  render()
+  const offs = [
+    on('project', ({ reason } = {}) => { if (reason !== 'edit' || db()?.instanceOf) render(); else pickers.forEach((p) => p.refresh()) }),
+    on('online', render),
+    on('tick', () => { for (const c of body.querySelectorAll('[data-mon]')) { const v = readOperand('', c.dataset.mon); c.textContent = fmt(v); c.className = `val ${v === true ? 't' : v === false ? 'f' : ''}` } }),
+  ]
+  return { dispose: () => { offs.forEach((f) => f()); pickers.forEach((p) => p.dispose()) } }
+}
+
 /* ----------------------------------------------------------- watch table -- */
 function parseFor(type, text) {
   const s = String(text).trim()

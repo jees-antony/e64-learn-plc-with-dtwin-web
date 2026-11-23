@@ -35,7 +35,7 @@ const wait = (ms = 0) => new Promise((r) => setTimeout(r, ms))
 export async function editorWith(project) {
   const a = await loadApp()
   const { store, commands, mountLadder, document } = a
-  a.mounted?.dispose(); a.closeQuick(); document.body.replaceChildren()
+  a.mounted?.dispose(); document.body.replaceChildren()
   store.replaceProject(project)
   const block = store.state.project.blocks.find((b) => b.lang === 'LAD')
   store.state.active = `block:${block.id}`
@@ -48,11 +48,18 @@ export async function editorWith(project) {
   const h = {
     a, store, document, $, $$, net, lad, wait,
     networks: () => lad().networks,
-    /** The "+" button on the wire at `gap` in network `ni`. */
-    plus: (ni, gap) => $$('[data-gap]', net(ni)).find((s) => s.dataset.gap === JSON.stringify(gap))?.querySelector('.gap-plus'),
-    async clickPlus(ni, gap) { const b = h.plus(ni, gap); if (!b) throw new Error(`no + at ${ni} ${JSON.stringify(gap)}`); h.mouse(b, 'mousedown'); b.click(); await wait(5) },
-    menuRows: () => $$('.quick-menu .qm-row').map((r) => r.querySelector('b')?.textContent),
-    async pick(label) { const r = $$('.quick-menu .qm-row').find((x) => x.querySelector('b')?.textContent === label); if (!r) throw new Error(`no menu row "${label}" in ${JSON.stringify(h.menuRows())}`); r.click(); await wait(40) },
+    /** The connection (rung line) at `gap` in network `ni`. */
+    slot: (ni, gap) => $$('[data-gap]', net(ni)).find((s) => s.dataset.gap === JSON.stringify(gap)),
+    /** Click a connection to select it, as a learner does before inserting. */
+    async clickSlot(ni, gap) { const s = h.slot(ni, gap); if (!s) throw new Error(`no connection at ${ni} ${JSON.stringify(gap)}`); h.mouse(s, 'mousedown'); await wait(5) },
+    /** Click a favorites-bar button by its accessible name ('Normally open contact', 'Assignment', 'Empty box' …). */
+    async fav(label) { const b = $$('.fav-bar .fav').find((x) => x.getAttribute('aria-label') === label); if (!b) throw new Error(`no favorite "${label}"`); b.click(); await wait(40) },
+    /** Right-click an element and return the labels of the context menu. */
+    async context(el) { el.dispatchEvent(new a.window.MouseEvent('contextmenu', { bubbles: true, cancelable: true })); await wait(5); return $$('.ctx .ctx-item').map((b) => b.querySelector('span')?.textContent) },
+    async menuPick(label) { const b = $$('.ctx .ctx-item').find((x) => x.querySelector('span')?.textContent === label); if (!b) throw new Error(`no menu item "${label}"`); b.click(); await wait(40) },
+    /** Open dialog (Call options, Define tag …): its element, and a helper to press a footer button. */
+    dialog: () => $('dialog.tia-dlg'),
+    async dialogButton(label) { const b = [...(h.dialog()?.querySelectorAll('button') ?? [])].find((x) => x.textContent === label); if (!b) throw new Error(`no dialog button "${label}"`); b.click(); await wait(40) },
     input: () => $('.op-edit'),
     async type(text, key = 'Enter', opts = {}) { const i = h.input(); if (!i) throw new Error('no operand box open'); i.value = text; h.key(i, key, opts); await wait(40) },
     key(target, key, opts = {}) { target.dispatchEvent(new a.window.KeyboardEvent('keydown', { key, bubbles: true, cancelable: true, ...opts })) },

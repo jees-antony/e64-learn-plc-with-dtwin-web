@@ -85,7 +85,8 @@ export function validateLadderNetwork(net) {
   let action = !!net.coils?.length
   const walk = (list, base) => list.forEach((e, i) => {
     const path = [...base, i]
-    if (e.k === 'move' || e.k === 'math' || e.k === 'box') action = true
+    if (e.k === 'move' || e.k === 'math' || e.k === 'box' || e.k === 'call') action = true
+    if (e.k === 'empty') errors.push({ path, message: 'Empty box: click "??" and type an instruction or block name.' })
     if (e.k !== 'branch') return
     if (e.closed === false) errors.push({ path, message: 'Branch is not closed. Add an instruction to the open path, then drag its end to a return wire or use Shift+F9.' })
     if (!Array.isArray(e.branches) || e.branches.length < 2) errors.push({ path, message: 'A branch needs at least two parallel paths.' })
@@ -95,6 +96,6 @@ export function validateLadderNetwork(net) {
     })
   })
   walk(net.elements ?? [], [])
-  if (net.elements?.length && !action) errors.push({ message: 'Rung has no output. Add a coil or an instruction such as a timer, counter, MOVE or ADD.' })
+  if (net.elements?.length && !action) errors.push({ message: 'Rung has no output. Add a coil, a block call or an instruction such as a timer, counter, MOVE or ADD.' })
   return errors
 }
