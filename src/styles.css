@@ -149,9 +149,8 @@ table.grid td.val.t { color: var(--true); font-weight: 700; } table.grid td.val.
 .el .tagname.empty { color: var(--err); }
 .el .addr { display: block; font-size: 9.5px; color: var(--faint); min-height: 12px; }
 .el .sym { display: block; margin: 0 auto; }
-/* The box is as wide as the tag name, the 44px symbol sits centred: draw the wire on both sides of it so the rung
-   reaches the contact or coil (line centre 29px = name 16px + half the 26px symbol). */
-.el.sym-el::before, .el.sym-el::after { content: ''; position: absolute; top: 28px; width: calc(50% - 22px); border-top: 2px solid #222; pointer-events: none; }
+/* Extend the rung to the centered 44px symbol. The stroke starts at 12px + 16px + 13px - 1px. */
+.el.sym-el::before, .el.sym-el::after { content: ''; position: absolute; top: 40px; width: calc(50% - 22px); border-top: 2px solid #222; pointer-events: none; }
 .el.sym-el::before { left: 0; } .el.sym-el::after { right: 0; }
 .net.mon .el.sym-el.t::before, .net.mon .el.sym-el.t::after { border-top-color: var(--true); }
 .net.mon .el.sym-el.f::before, .net.mon .el.sym-el.f::after { border-top: 2px dashed var(--false); }
@@ -455,10 +454,9 @@ table.keys kbd { margin: 0; background: var(--head2); border: 1px solid var(--li
 .net-body .end { display: none; }   /* LAD rungs end open: no right power rail */
 
 /* contacts and coils: absolute address above the symbolic operand, both above the symbol */
-.el.sym-el { margin-top: 8px; }
+.el.sym-el { margin-top: 9px; }
 .el.sym-el .addr { height: 12px; min-height: 0; line-height: 12px; }
 .el.sym-el .tagname { height: 16px; line-height: 14px; }
-.el.sym-el::before, .el.sym-el::after { top: 40px; }
 
 /* connections: select one to insert there; drop markers appear only while dragging */
 .wire-slot .drop-mark { display: none; position: absolute; left: 50%; top: -5px; width: 8px; height: 8px; margin-left: -4px; border: 1px solid #14845b; background: #e7f7ef; pointer-events: none; z-index: 2; }
